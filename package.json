@@ -1,0 +1,28 @@
+{
+  "name": "opencode-catpaw-tools-auth",
+  "version": "0.1.0",
+  "description": "OpenCode/magpie provider plugin: 妙手 CatPaw (Meituan) — chat with tool calling over its conversation protocol",
+  "type": "module",
+  "main": "./index.mjs",
+  "exports": "./index.mjs",
+  "files": [
+    "index.mjs",
+    "README.md"
+  ],
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "magpie",
+    "catpaw",
+    "妙手",
+    "meituan"
+  ],
+  "license": "MIT",
+  "scripts": {
+    "test": "bun test"
+  },
+  "magpie": {
+    "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+PGNpcmNsZSBjeD0iMzIiIGN5PSIzMiIgcj0iMzIiIGZpbGw9IiNGMjY2MkEiLz48ZyBmaWxsPSIjZmZmIj48ZWxsaXBzZSBjeD0iMjEuNSIgY3k9IjI0IiByeD0iNSIgcnk9IjYuNSIvPjxlbGxpcHNlIGN4PSIzMiIgY3k9IjE5IiByeD0iNS41IiByeT0iNyIvPjxlbGxpcHNlIGN4PSI0Mi41IiBjeT0iMjQiIHJ4PSI1IiByeT0iNi41Ii8+PGVsbGlwc2UgY3g9IjE1IiBjeT0iMzYiIHJ4PSI0LjUiIHJ5PSI2Ii8+PGVsbGlwc2UgY3g9IjQ5IiBjeT0iMzYiIHJ4PSI0LjUiIHJ5PSI2Ii8+PHBhdGggZD0iTTMyIDMyYzcgMCAxMiA0LjYgMTIgMTEgMCA1LTQgOC0xMiA4cy0xMi0zLTEyLThjMC02LjQgNS0xMSAxMi0xMXoiLz48L2c+PC9zdmc+Cg==",
+    "maxConcurrency": 2
+  }
+}
