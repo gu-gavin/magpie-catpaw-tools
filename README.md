@@ -165,7 +165,7 @@ magpie provider models catpaw-tools
 ## 测试
 
 ```bash
-bun test        # 20 个单元测试，不触网
+bun test        # 35 个单元测试，不触网
 ```
 
 端到端验证过（真实账号）：纯对话、工具调用、工具结果回传、流式 tool_calls 聚合、多轮记忆、未知模型、图片拒绝、不同模型、Anthropic 协议入口。
