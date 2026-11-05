@@ -4,7 +4,16 @@
 
 与社区插件 `@magpie-community/opencode-catpaw-auth` 的区别：那个用**提示词协议**假装工具调用——把工具定义塞进系统指令，要求模型在正文里回 `{"tool_calls":[…]}` 再解析出来。模型一走神就断，拿不到真正的 `finish_reason: tool_calls`，也拿不到流式增量。这个插件走妙手自己的 **Agent 协议**（`toolConfigs` → `tool_use` 帧 → `tool_result`），工具调用是协议层原生的：服务端决定调哪个工具，客户端执行，结果回传。
 
-图标也有，而且是两个位置各管一处：`auth.icon`（内联的 `data:image/svg+xml` URI，猫爪）落在 provider 行上，magpie 会把它缓存到 `~/.config/magpie/icons/`；`package.json` 里 `"magpie": { "icon": … }` 管 Discover 卡片，缺了会画成一个拼图块。两处是同一张图的同一串 base64，`index.test.mjs` 有一条断言盯着它们不许走散。要换图，改这两处——magpie 认 `https://` URL 或 `data:` URI，上限 1 MB。
+图标用的是妙手官方的标记，两个位置各管一处：`auth.icon` 落在 provider 行上，magpie 会把它缓存到 `~/.config/magpie/icons/`；`package.json` 里 `"magpie": { "icon": … }` 管 Discover 卡片，缺了会画成一个拼图块。两处是同一张图的同一串 base64，`index.test.mjs` 有一条断言盯着它们不许走散。要换图，改这两处——magpie 认 `https://` URL 或 `data:` URI，上限 1 MB。
+
+原图来自妙手官方 CDN，字节原样内联（没有缩放、没有二次压缩，所以显示时不会比官方版本更糊）：
+
+```
+https://s3plus.meituan.net/mcopilot-pub/nocode_image/default/CatPaw%20IDE_插件用户群头像-2o575boimy0e2qt8bg07nf02ad5q71.jpg
+480×480 JPEG · 18946 字节 · sha256 10bd758cd113e3b2b14c3d9b4f709a14db06369380e6db737ec913e66c59558b
+```
+
+内联而不是直接写这个 URL，是为了让图标不依赖 CDN：仓库自带一份，离线也能画出来，URL 以后失效也不影响已装好的插件。
 
 ## 安装
 

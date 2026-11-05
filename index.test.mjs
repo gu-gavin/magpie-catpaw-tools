@@ -211,7 +211,7 @@ describe("lastUserMessage", () => {
 describe("icon", () => {
   test("the provider row gets a picture without a fetch", async () => {
     const { auth } = await CatPawToolsAuthPlugin({})
-    expect(auth.icon).toMatch(/^data:image\/svg\+xml;base64,/)
+    expect(auth.icon).toMatch(/^data:image\/jpeg;base64,/)
     expect(auth.icon.length).toBeLessThan(1_000_000)
   })
 
