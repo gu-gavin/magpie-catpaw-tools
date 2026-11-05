@@ -6,14 +6,15 @@
 
 图标用的是妙手官方的标记，两个位置各管一处：`auth.icon` 落在 provider 行上，magpie 会把它缓存到 `~/.config/magpie/icons/`；`package.json` 里 `"magpie": { "icon": … }` 管 Discover 卡片，缺了会画成一个拼图块。两处是同一张图的同一串 base64，`index.test.mjs` 有一条断言盯着它们不许走散。要换图，改这两处——magpie 认 `https://` URL 或 `data:` URI，上限 1 MB。
 
-原图来自妙手官方 CDN，字节原样内联（没有缩放、没有二次压缩，所以显示时不会比官方版本更糊）：
+图不是直接把原图塞进去的，做了一步处理：**把四个角裁圆**。magpie 里的插件图标都是圆角方块（它缓存里那几百个图标的圆角半径都在宽度的 19%–22% 之间），一张方方正正的图放进去会在圆角图标中间戳出一块直角砖头。所以这张图按宽度的 22% 做了圆角遮罩、缩到 256×256、编成带 alpha 的 WebP：
 
 ```
-https://s3plus.meituan.net/mcopilot-pub/nocode_image/default/CatPaw%20IDE_插件用户群头像-2o575boimy0e2qt8bg07nf02ad5q71.jpg
-480×480 JPEG · 18946 字节 · sha256 10bd758cd113e3b2b14c3d9b4f709a14db06369380e6db737ec913e66c59558b
+原图  https://s3plus.meituan.net/mcopilot-pub/nocode_image/default/CatPaw%20IDE_插件用户群头像-2o575boimy0e2qt8bg07nf02ad5q71.jpg
+      480×480 JPEG · 18946 字节 · sha256 10bd758cd113e3b2b14c3d9b4f709a14db06369380e6db737ec913e66c59558b
+图标  256×256 WebP(alpha) · 9300 字节 · 圆角半径 22%
 ```
 
-内联而不是直接写这个 URL，是为了让图标不依赖 CDN：仓库自带一份，离线也能画出来，URL 以后失效也不影响已装好的插件。
+内联而不是直接写那个 URL，是为了让图标不依赖 CDN：仓库自带一份，离线也能画出来，URL 以后失效也不影响已装好的插件。用 WebP 而不是 PNG 是因为同一张图 PNG 要 54 KB、WebP 只要 9 KB，而它要在 `index.mjs` 和 `package.json` 里各存一份。
 
 ## 安装
 

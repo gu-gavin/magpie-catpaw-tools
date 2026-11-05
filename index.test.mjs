@@ -211,8 +211,23 @@ describe("lastUserMessage", () => {
 describe("icon", () => {
   test("the provider row gets a picture without a fetch", async () => {
     const { auth } = await CatPawToolsAuthPlugin({})
-    expect(auth.icon).toMatch(/^data:image\/jpeg;base64,/)
+    expect(auth.icon).toMatch(/^data:image\/webp;base64,/)
     expect(auth.icon.length).toBeLessThan(1_000_000)
+  })
+
+  // magpie draws plugin icons as rounded squares — the other few hundred in its
+  // icon cache have transparent corners with a radius near a fifth of the
+  // width. A plain square source shows up as a hard tile beside them, so this
+  // one is masked before it is encoded. Reading the header is enough to know
+  // the alpha channel survived; there is no image decoder here to look at.
+  test("the icon carries an alpha channel, so its corners can be round", async () => {
+    const { auth } = await CatPawToolsAuthPlugin({})
+    const bytes = Buffer.from(auth.icon.split(",", 2)[1], "base64")
+    expect(bytes.subarray(0, 4).toString("latin1")).toBe("RIFF")
+    expect(bytes.subarray(8, 12).toString("latin1")).toBe("WEBP")
+    expect(bytes.subarray(12, 16).toString("latin1")).toBe("VP8X") // extended, not plain VP8
+    expect(bytes[20] & 0x10).toBe(0x10) // the alpha flag
+    expect(bytes[24] + 1).toBe(256) // canvas width, stored as width - 1
   })
 
   // Discover draws a plugin's card from "magpie": { "icon": … } in package.json
