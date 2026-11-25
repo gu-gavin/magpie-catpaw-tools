@@ -15,7 +15,7 @@
 // not a delta — so each is diffed against the last.
 
 const ID = "catpaw-tools"
-const NAME = "妙手 CatPaw (tools)"
+const NAME = "妙手 CatPaw · 原生工具调用"
 
 const ORIGIN = "https://ai.catpaw.meituan.com"
 
@@ -37,21 +37,24 @@ const PASSPORT_BASE = process.env.CATPAW_PASSPORT_BASE || "https://catx.nocode.c
 // window of its own, so these are the model's own figures, not invented ones.
 
 const MODELS = {
-  "longcat-2.5": { name: "LongCat-2.5", type: 10002544, context: 1048576, output: 131072, reasoning: true, image: false },
-  "longcat-2.0": { name: "LongCat-2.0", type: 77, context: 1048576, output: 131072, reasoning: true, image: false },
+  "longcat-2.5": { name: "LongCat-2.5", type: 107, context: 1048576, output: 131072, reasoning: true, image: true },
+  "longcat-2.0": { name: "LongCat-2.0", type: 77, context: 1048576, output: 131072, reasoning: true, image: true },
   "glm-5.3": { name: "GLM-5.3", type: 89, context: 1000000, output: 131072, reasoning: true, image: false },
-  "glm-5.3-flash": { name: "GLM-5.3-Flash", type: 91, context: 1000000, output: 131072, reasoning: true, image: false },
-  "glm-5.3-flashx": { name: "GLM-5.3-FlashX", type: 98, context: 1000000, output: 131072, reasoning: true, image: false },
-  "deepseek-v4.1-flash": { name: "DeepSeek-V4.1-Flash", type: 97, context: 1000000, output: 384000, reasoning: true, image: false },
+  "glm-5.3-flash": { name: "GLM-5.3-Flash", type: 91, context: 1000000, output: 131072, reasoning: true, image: true },
+  "glm-5.3-flashx": { name: "GLM-5.3-FlashX", type: 98, context: 1000000, output: 131072, reasoning: true, image: true },
+  "deepseek-v4.1-flash": { name: "DeepSeek-V4.1-Flash", type: 97, context: 1000000, output: 384000, reasoning: true, image: true },
   "deepseek-v4-pro": { name: "DeepSeek-V4-Pro", type: 64, context: 1000000, output: 384000, reasoning: true, image: false },
   "minimax-m3.1-flash": { name: "MiniMax-M3.1-Flash", type: 10002518, context: 1000000, output: 524288, reasoning: true, image: false },
-  "minimax-m3": { name: "MiniMax-M3", type: 70, context: 1000000, output: 524288, reasoning: true, image: false },
-  "kimi-k3.1-pro": { name: "Kimi-K3.1-Pro", type: 10002533, context: 1048576, output: 131072, reasoning: true, image: false },
-  "kimi-k3": { name: "Kimi-K3", type: 83, context: 1048576, output: 131072, reasoning: true, image: false },
+  "minimax-m3": { name: "MiniMax-M3", type: 70, context: 1000000, output: 524288, reasoning: true, image: true },
+  "kimi-k3.1-pro": { name: "Kimi-K3.1-Pro", type: 10002533, context: 1048576, output: 131072, reasoning: true, image: true },
+  "kimi-k3": { name: "Kimi-K3", type: 83, context: 1048576, output: 131072, reasoning: true, image: true },
   "auto": { name: "Auto (妙手自动选择)", type: 0, context: 1000000, output: 131072, reasoning: true, image: false },
 }
 
-const modelTypeOf = (id) => MODELS[id]?.type ?? liveTypes.get(id) ?? MODELS["longcat-2.0"].type
+// the vendor's own id wins when the live list has it: modelTypeIds get
+// renumbered (LongCat-2.5 moved 10002544 → 107 in 2026-11), and the table's
+// snapshot is only a fallback for when the list cannot be read
+const modelTypeOf = (id) => liveTypes.get(id) ?? MODELS[id]?.type ?? MODELS["longcat-2.0"].type
 
 const isKnownModel = (id) => id in MODELS || liveTypes.has(id)
 
@@ -71,7 +74,10 @@ function configModel(id, m = MODELS[id]) {
     limit: { context: base.context, output: base.output },
     reasoning: base.reasoning,
     tool_call: true,
-    modalities: { input: ["text"], output: ["text"] },
+    modalities: {
+      input: base.image ? ["text", "image"] : ["text"],
+      output: ["text"],
+    },
   }
 }
 
@@ -109,6 +115,18 @@ const rateLimitMessage = (sec) =>
 
 const rateLimitedError = (sec) =>
   errorResponse(429, rateLimitMessage(sec), "rate_limit_error", { "retry-after": String(sec) })
+
+// One place that turns a failed step into the right status: the vendor reports
+// a spent balance and an expired login as ordinary error text, and a 429 must
+// carry Retry-After so the host backs off instead of retrying in place.
+function stepError(e) {
+  if (e?.httpStatus === 429) return rateLimitedError(noteRateLimit())
+  const detail = String(e?.message ?? e)
+  if (e?.quota || QUOTA_GATE.test(detail)) return quotaResponse(detail)
+  if (e?.httpStatus === 401) return signInError(detail)
+  if (e?.httpStatus === 402) return quotaResponse(detail)
+  return errorResponse(e?.httpStatus >= 400 && e?.httpStatus < 500 ? e.httpStatus : 502, detail, e?.httpStatus === 401 ? "authentication_error" : "api_error")
+}
 
 // extendedInfo.rateMultiplier, the multiplier the client prints as "<n>x";
 // undefined when the vendor gives none, so nothing is shown rather than 0
@@ -148,6 +166,7 @@ function liveModels(rows) {
       // with the badges the client draws beside it
       name: MODELS[id]?.name ?? (copy.length ? `${name} (${copy.join("、")})` : name),
       type,
+      ...(r.supportImage === true ? { image: true } : {}),
       ...(rate !== undefined ? { rate } : {}),
       ...(free ? { free: true } : {}),
     }
@@ -201,8 +220,39 @@ const json = (status, body, headers = {}) =>
     headers: { "content-type": "application/json", ...headers },
   })
 
-const errorResponse = (status, message, type = "invalid_request_error", headers = {}) =>
-  json(status, { error: { message, type, code: null, param: null } }, headers)
+const errorResponse = (
+  status,
+  message,
+  type = "invalid_request_error",
+  headers = {},
+  fields = {},
+) => json(status, { error: { message, type, code: null, param: null, ...fields } }, headers)
+
+// magpie reads this header as "the sign-in is gone, stop retrying": without it
+// an expired token looks like an ordinary upstream failure.
+const SIGN_IN_HEADERS = { "X-Magpie-Sign-In": "expired" }
+const signInError = (message) =>
+  errorResponse(401, message, "authentication_error", SIGN_IN_HEADERS)
+
+// 妙手 reports a spent balance as an ordinary error string rather than a 402.
+// Mapping it keeps hosts from retrying a request that can never succeed.
+const QUOTA_GATE = /余额不足|insufficient\s*(?:credit|quota|balance)/i
+const PLAN_URL = "https://credit.catpaw.meituan.com/#/plan"
+
+// The gate's sentence carries a markdown link, which most agents print as
+// plain text; spell it out and keep the URL in a field they can use.
+function quotaResponse(detail) {
+  const upstream = String(detail ?? "").trim().slice(0, 300)
+  const message = upstream.replace(/\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)/g, "$1 ($2)")
+  const help = upstream.match(/https?:\/\/[^)\s]+/)?.[0] ?? PLAN_URL
+  return errorResponse(
+    402,
+    message || "妙手账户余额不足",
+    "insufficient_quota",
+    {},
+    { code: "insufficient_credits", help_url: help, upstream_message: upstream },
+  )
+}
 
 async function bodyText(input, init) {
   const b = init?.body ?? (input instanceof Request ? await input.clone().text() : undefined)
@@ -302,6 +352,11 @@ function authAccountName() {
 // a pasted one), otherwise the desktop client's file — which is read live, so
 // signing in again in 妙手 is picked up without restarting magpie.
 async function resolveToken(getAuth) {
+  // A pasted/enved token is the escape hatch when the desktop client isn't
+  // signed in but the user still has an accessToken to hand over.
+  const pasted = process.env.CATPAW_TOKEN?.trim()
+  if (pasted) return { token: pasted, name: "手动粘贴" }
+
   const a = await getAuth()
   if (a?.type === "oauth" && a.access && a.source !== "desktop") {
     const name = a.name || a.accountId || (a.source === "manual" ? "手动粘贴" : "网页登录")
@@ -597,14 +652,110 @@ async function* runTurn(token, { conversationId, message, modelType, toolConfigs
         continue
       }
       if (frame.error) {
-        throw Object.assign(new Error(`妙手 SSE 错误：${frame.error.message ?? JSON.stringify(frame.error)}`), {
+        const said = `妙手 SSE 错误：${frame.error.message ?? JSON.stringify(frame.error)}`
+        throw Object.assign(new Error(said), {
           unifyCode: frame.error.unifyCode,
           code: frame.error.code,
+          quota: QUOTA_GATE.test(said),
         })
       }
-      if (frame.message) yield frame.message
+      if (frame.message) {
+        // the credit gate can also arrive as ordinary assistant text, in
+        // frames that name no model (every real model's frame carries one)
+        const said = (frame.message.content ?? []).map((c) => c.text ?? "").join("")
+        if (frame.message.model == null && QUOTA_GATE.test(said)) {
+          throw Object.assign(new Error(said), { quota: true })
+        }
+        yield frame.message
+      }
     }
   }
+}
+
+// ── images ─────────────────────────────────────────────────────────────────
+//
+// round/turn take image parts directly: `{ type: "image_url", imageUrl: { url } }`,
+// where url is an https link on the same S3 the desktop client uploads to. The
+// bytes never go inline — a data: URI in `imageUrl.url` is stored but not shown
+// to the model, so the picture is uploaded first and only the link is sent.
+//
+// The shape was measured 2026-11-25 on LongCat-2.5: `{type:"image"}` with the
+// same imageUrl, or a bare string in `imageUrl`, is accepted by the JSON parser
+// but never reaches the model (it answers "no image attached"). Only
+// `type: "image_url"` + `imageUrl: { url }` does.
+
+// Image parts of the *latest* user turn. Earlier turns are already in the
+// server-side history, so re-sending their pictures would duplicate them.
+function lastUserImages(chat) {
+  const out = []
+  for (let i = (chat.messages ?? []).length - 1; i >= 0; i--) {
+    const msg = chat.messages[i]
+    if (msg?.role !== "user") continue
+    if (!Array.isArray(msg.content)) break
+    for (const part of msg.content) {
+      if (part?.type === "image_url") {
+        const url = typeof part.image_url === "string" ? part.image_url : part.image_url?.url
+        if (url) out.push(url)
+      } else if (part?.type === "image") {
+        const src = part.source
+        if (!src) continue
+        if (src.type === "base64") {
+          const mime = src.media_type || src.mediaType || "image/png"
+          const data = src.data ?? src.src
+          if (data) out.push(String(data).startsWith("data:") ? String(data) : `data:${mime};base64,${data}`)
+        } else if (src.url) {
+          out.push(src.url)
+        }
+      }
+    }
+    break
+  }
+  return out
+}
+
+// uploadImage puts the bytes on the same S3 the desktop client uses and returns
+// a URL the model can fetch. Data URIs are uploaded; http(s) URLs are reused.
+async function uploadImage(token, url, conversationId) {
+  if (/^https?:\/\//i.test(url)) return url
+  const m = /^data:([^;,]+)(;base64)?,(.*)$/s.exec(url)
+  if (!m) throw new Error("妙手 CatPaw: 图片必须是 data: URI 或 http(s) 链接")
+  const mime = m[1] || "image/png"
+  const bytes = m[2] ? Buffer.from(m[3], "base64") : Buffer.from(decodeURIComponent(m[3]), "binary")
+  const name = `image-${Date.now()}.${(mime.split("/")[1] || "png").replace("jpeg", "jpg")}`
+  const q = new URLSearchParams({ fileName: name, fileType: mime, conversationId })
+  const res = await fetch(`${PASSPORT_BASE}/api/gateway/v1/s3/upload-image?${q}`, {
+    method: "POST",
+    headers: { "X-Auth-Token": token, "content-type": "text/plain" },
+    body: bytes.toString("base64"),
+    signal: AbortSignal.timeout(30_000),
+  })
+  const payload = await res.json().catch(() => null)
+  const uploaded = payload?.data?.url
+  if (res.status !== 200 || !uploaded) {
+    throw new Error(
+      `妙手图片上传失败：HTTP ${res.status} ${JSON.stringify(payload ?? {}).slice(0, 200)}`,
+    )
+  }
+  return uploaded
+}
+
+// withImages returns the user message carrying the uploaded pictures. A message
+// that is already in CatPaw's shape gets the parts appended; a plain one is
+// wrapped.
+//
+// The id must be new: the same `messageId` was already sent to `round`, and the
+// server answers a turn that repeats it by rebuilding the message from the
+// stored round — pictures dropped. Measured 2026-11-25: same id → "没有看到图片
+// 附件", fresh id → the picture is read.
+function withImages(message, urls) {
+  if (urls.length === 0) return message
+  const parts = Array.isArray(message.content) ? [...message.content] : []
+  if (parts.length === 0) {
+    const text = typeof message.content === "string" ? message.content : ""
+    if (text) parts.push({ type: "text", text })
+  }
+  for (const url of urls) parts.push({ type: "image_url", imageUrl: { url } })
+  return { ...message, messageId: uuid(), content: parts }
 }
 
 // The stream is cumulative: each frame repeats the whole text / toolParams so
@@ -683,20 +834,6 @@ export async function CatPawToolsAuthPlugin({ client } = {}) {
               )
             }
 
-            // images: the protocol carries text only, so refuse rather than
-            // silently dropping them
-            const hasImage = chat.messages.some(
-              (m) =>
-                Array.isArray(m.content) &&
-                m.content.some((c) => c?.type === "image_url" || c?.type === "image"),
-            )
-            if (hasImage) {
-              return errorResponse(
-                400,
-                "妙手 CatPaw: this provider is text-only; an image part would be dropped silently, so the request is refused",
-              )
-            }
-
             // A cooldown opened by an earlier 429 is still running: answer at
             // once instead of sending another doomed request upstream.
             const cooling = rateLimitSecondsLeft()
@@ -708,14 +845,12 @@ export async function CatPawToolsAuthPlugin({ client } = {}) {
               token = r.token
               accountName = r.name
             } catch (e) {
-              return errorResponse(
-                e instanceof SignedOut ? 401 : 502,
-                String(e?.message ?? e),
-                e instanceof SignedOut ? "authentication_error" : "api_error",
-              )
+              if (e instanceof SignedOut) return signInError(String(e.message))
+              return errorResponse(502, String(e?.message ?? e), "api_error")
             }
 
             const { messages, systemPrompt } = fromOpenAI(chat)
+
             if (messages.length === 0) return errorResponse(400, "no usable messages")
 
             const toolConfigs = toToolConfigs(chat.tools)
@@ -728,10 +863,10 @@ export async function CatPawToolsAuthPlugin({ client } = {}) {
             const sessionKey = chatId(chat)
             let conversationId = conversations.get(sessionKey)
             const fresh = !conversationId
-            if (fresh) {
-              conversationId = uuid()
-              conversations.set(sessionKey, conversationId)
-            }
+            // Only remembered once the server has accepted the conversation:
+            // a failed `round` must not leave a dead id behind, or every later
+            // turn would skip `round` and stream into nothing.
+            if (fresh) conversationId = uuid()
 
             // The server keeps the chat history, so each round sends only the
             // new message: the opening one for a fresh conversation, the tool
@@ -739,40 +874,72 @@ export async function CatPawToolsAuthPlugin({ client } = {}) {
             // list would duplicate it.
             const messageToSend = continuing ? tail : lastUserMessage(messages)
 
-            // Every round starts with `round`. On a fresh conversation it is
-            // followed by `event` to mark it running; later rounds are already
-            // running from the previous one, and an extra `event` there answers
-            // "会话正在执行中" on round.
-            const round = await post(
-              "/api/agent/conversation/round",
-              {
-                conversationId,
-                message: messageToSend,
-                modelType: modelTypeOf(model),
-                source: "CatX",
-                mode: "CATX_APP",
-                permissionMode: "unsafeBypassPermissions",
-                toolVersion: "2.0.2",
-                repositories: [],
-              },
-              token,
-              { extraHeaders: { "m-spanid": "0.2", "m-spanname": "conversation.round" } },
-            ).catch((e) => ({ status: 0, text: String(e?.message ?? e) }))
-
-            if (round.status === 429 || looksRateLimited(round.text)) {
-              return rateLimitedError(noteRateLimit())
-            }
-            if (round.status !== 200) {
-              // status 0 means the call never landed (network, timeout): going
-              // on to open the stream would fail with a much less useful error
-              return errorResponse(
-                502,
-                `妙手 round 失败：HTTP ${round.status} ${round.text.slice(0, 300)}`,
-                "api_error",
-              )
+            // Pictures ride on the *turn* message. `round` only stores what it
+            // is given; an image part sent there lands in the history but the
+            // model never sees it. A turn message carrying
+            // `{type:"image_url", imageUrl:{url}}` is the shape the model does
+            // read, so the bytes are uploaded first and only the link is sent.
+            // Tool continuations carry no pictures: the opening turn already
+            // put them in the server-side history.
+            const images = continuing ? [] : lastUserImages(chat)
+            let turnMessage = messageToSend
+            if (images.length > 0) {
+              const urls = []
+              try {
+                for (const img of images) urls.push(await uploadImage(token, img, conversationId))
+              } catch (e) {
+                return errorResponse(400, String(e?.message ?? e))
+              }
+              turnMessage = withImages(messageToSend, urls)
             }
 
+            // `round` only ever succeeds on a fresh conversation. The server
+            // keeps a conversation "running" after the first turn and answers
+            // every later round with 1004010010 "会话正在执行中，无法创建新轮次"
+            // (turn-end does not close it either), yet `turn` on its own keeps
+            // working and stores the message. So the opening turn registers the
+            // round, and later turns go straight to the stream.
             if (fresh) {
+              const round = await post(
+                "/api/agent/conversation/round",
+                {
+                  conversationId,
+                  message: messageToSend,
+                  modelType: modelTypeOf(model),
+                  source: "CatX",
+                  mode: "CATX_APP",
+                  permissionMode: "unsafeBypassPermissions",
+                  toolVersion: "2.0.2",
+                  repositories: [],
+                },
+                token,
+                { extraHeaders: { "m-spanid": "0.2", "m-spanname": "conversation.round" } },
+              ).catch((e) => ({ status: 0, text: String(e?.message ?? e) }))
+
+              if (round.status === 429 || looksRateLimited(round.text)) {
+                return rateLimitedError(noteRateLimit())
+              }
+              if (round.status !== 200) {
+                if (QUOTA_GATE.test(round.text)) return quotaResponse(round.text)
+                // `round` reports a dead token as 401 with its own envelope;
+                // passing that through as a 502 would send the host retrying
+                // instead of asking the user to sign in again.
+                if (round.status === 401 || /passport auth failed|请重新登录/.test(round.text)) {
+                  return signInError(`妙手登录态已失效：${round.text.slice(0, 300)}`)
+                }
+                // status 0 means the call never landed (network, timeout): going
+                // on to open the stream would fail with a much less useful error
+                return errorResponse(
+                  502,
+                  `妙手 round 失败：HTTP ${round.status} ${round.text.slice(0, 300)}`,
+                  "api_error",
+                )
+              }
+
+              // The round landed, so the conversation exists: from here on
+              // later turns stream into it without another `round`.
+              conversations.set(sessionKey, conversationId)
+
               const event = await post(
                 "/api/agent/conversation/event",
                 { conversationId, eventType: "conversation", data: { status: "running" } },
@@ -820,7 +987,7 @@ export async function CatPawToolsAuthPlugin({ client } = {}) {
                   try {
                     for await (const msg of runTurn(token, {
                       conversationId,
-                      message: messageToSend,
+                      message: turnMessage,
                       modelType: modelTypeOf(model),
                       toolConfigs,
                       systemPrompt,
@@ -860,15 +1027,19 @@ export async function CatPawToolsAuthPlugin({ client } = {}) {
                     controller.enqueue(encoder.encode("data: [DONE]\n\n"))
                   } catch (e) {
                     // headers are already out, so the status cannot change:
-                    // say it in the frame instead
-                    const message =
-                      e?.httpStatus === 429
-                        ? rateLimitMessage(noteRateLimit())
-                        : String(e?.message ?? e)
+                    // say it in the frame instead, with the same typing the
+                    // non-streaming path would have used
+                    const mapped = stepError(e)
+                    const body = await mapped.json().catch(() => null)
+                    const upstream = body?.error ?? {}
+                    const error = {
+                      message: upstream.message ?? String(e?.message ?? e),
+                      ...(upstream.type ? { type: upstream.type } : {}),
+                      ...(upstream.code ? { code: upstream.code } : {}),
+                      ...(mapped.status === 402 ? { code: "insufficient_credits" } : {}),
+                    }
                     controller.enqueue(
-                      encoder.encode(
-                        `data: ${JSON.stringify({ error: { message } })}\n\n`,
-                      ),
+                      encoder.encode(`data: ${JSON.stringify({ error })}\n\n`),
                     )
                     controller.enqueue(encoder.encode("data: [DONE]\n\n"))
                   }
@@ -888,7 +1059,7 @@ export async function CatPawToolsAuthPlugin({ client } = {}) {
             try {
               for await (const msg of runTurn(token, {
                 conversationId,
-                message: messageToSend,
+                message: turnMessage,
                 modelType: modelTypeOf(model),
                 toolConfigs,
                 systemPrompt,
@@ -907,9 +1078,7 @@ export async function CatPawToolsAuthPlugin({ client } = {}) {
                 }
               }
             } catch (e) {
-              if (e?.httpStatus === 429) return rateLimitedError(noteRateLimit())
-              const status = e?.httpStatus === 401 ? 401 : 502
-              return errorResponse(status, String(e?.message ?? e), "api_error")
+              return stepError(e)
             }
 
             const message = { role: "assistant", content: text || null }
@@ -1133,16 +1302,20 @@ export async function CatPawToolsAuthPlugin({ client } = {}) {
             .filter(([id]) => !(id in have))
             .map(([id, m]) => [id, configModel(id, { ...MODELS[id], ...m })]),
         )
-        // a model the table knows gets the list's rate and free mark, unless
-        // the user's own config already set one
+        // a model the table knows gets the list's rate, free mark and image
+        // support, unless the user's own config already set one
         const known = Object.fromEntries(
           Object.entries(have).map(([id, m]) => {
             const l = live[id]
             if (!l) return [id, m]
+            const wantsImage = l.image === true && !(m.modalities?.input ?? []).includes("image")
             return [
               id,
               {
                 ...m,
+                ...(wantsImage
+                  ? { modalities: { ...m.modalities, input: ["text", "image"], output: ["text"] } }
+                  : {}),
                 ...(l.rate !== undefined && m.rate === undefined ? { rate: l.rate } : {}),
                 ...(l.free && m.free === undefined ? { free: true } : {}),
               },
@@ -1219,4 +1392,7 @@ export const _internal = {
   authPath,
   chatId,
   lastUserMessage,
+  lastUserImages,
+  withImages,
+  stepError,
 }

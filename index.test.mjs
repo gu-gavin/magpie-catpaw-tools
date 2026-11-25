@@ -155,7 +155,7 @@ describe("models", () => {
 
   test("modelType ids are the ones the gateway was measured to accept", () => {
     // read off POST /api/agent/maas/model-types on 2026-11-05
-    expect(modelTypeOf("longcat-2.5")).toBe(10002544)
+    expect(modelTypeOf("longcat-2.5")).toBe(107)
     expect(modelTypeOf("longcat-2.0")).toBe(77)
     expect(modelTypeOf("glm-5.3")).toBe(89)
     expect(modelTypeOf("glm-5.3-flash")).toBe(91)
@@ -170,6 +170,62 @@ describe("models", () => {
 
   test("an unknown model falls back to LongCat instead of throwing", () => {
     expect(modelTypeOf("nope")).toBe(77)
+  })
+})
+
+describe("images", () => {
+  const { lastUserImages, withImages } = _internal
+
+  test("only the newest user turn's pictures are collected", () => {
+    const chat = {
+      messages: [
+        { role: "user", content: [{ type: "text", text: "old" }, { type: "image_url", image_url: { url: "https://a/old.png" } }] },
+        { role: "assistant", content: "ok" },
+        { role: "user", content: [{ type: "text", text: "new" }, { type: "image_url", image_url: { url: "https://a/new.png" } }] },
+      ],
+    }
+    expect(lastUserImages(chat)).toEqual(["https://a/new.png"])
+  })
+
+  test("a base64 image part becomes a data URI", () => {
+    const chat = {
+      messages: [
+        {
+          role: "user",
+          content: [{ type: "image", source: { type: "base64", media_type: "image/png", data: "AAA" } }],
+        },
+      ],
+    }
+    expect(lastUserImages(chat)).toEqual(["data:image/png;base64,AAA"])
+  })
+
+  test("no pictures means no parts", () => {
+    expect(lastUserImages({ messages: [{ role: "user", content: "plain" }] })).toEqual([])
+  })
+
+  // measured 2026-11-25: reusing the round's messageId makes the server rebuild
+  // the message from the stored round, dropping the pictures
+  test("the image-bearing turn gets a fresh messageId", () => {
+    const msg = withImages({ type: "user", messageId: "same", content: [{ type: "text", text: "hi" }], finished: true }, ["https://a/x.png"])
+    expect(msg.messageId).not.toBe("same")
+    expect(msg.content).toEqual([
+      { type: "text", text: "hi" },
+      { type: "image_url", imageUrl: { url: "https://a/x.png" } },
+    ])
+  })
+
+  test("with no pictures the message is untouched", () => {
+    const msg = { type: "user", messageId: "same", content: [{ type: "text", text: "hi" }], finished: true }
+    expect(withImages(msg, [])).toBe(msg)
+  })
+})
+
+describe("configModel image modality", () => {
+  test("a model that reads pictures declares image input", () => {
+    expect(configModel("longcat-2.5").modalities.input).toEqual(["text", "image"])
+  })
+  test("a text-only model does not", () => {
+    expect(configModel("glm-5.3").modalities.input).toEqual(["text"])
   })
 })
 
@@ -262,6 +318,7 @@ describe("liveModels", () => {
     expect(liveModels(rows)["longcat-2.5"]).toEqual({
       name: "LongCat-2.5",
       type: 10002544,
+      image: true,
       rate: 0,
       free: true,
     })
@@ -414,6 +471,113 @@ describe("rate limit", () => {
     } finally {
       globalThis.fetch = real
       forgetRateLimit()
+    }
+  })
+})
+
+describe("round", () => {
+  // `round` only succeeds on a conversation's first turn. The server keeps the
+  // conversation "running" forever after that (1004010010), so later turns skip
+  // it and stream straight into `turn` — which keeps working and stores the
+  // message. These tests pin both halves of that behaviour.
+  function stub(handler) {
+    const real = globalThis.fetch
+    const seen = []
+    globalThis.fetch = async (input, init) => {
+      const url = typeof input === "string" ? input : input.url
+      const path = url.replace(/^https?:\/\/[^/]+/, "")
+      seen.push({ path, body: init?.body ? JSON.parse(init.body) : null })
+      return handler(path, init)
+    }
+    return { seen, restore: () => { globalThis.fetch = real } }
+  }
+
+  // one plugin instance per test: the conversation map lives on it
+  async function client() {
+    const { auth } = await CatPawToolsAuthPlugin({})
+    const { fetch } = await auth.loader(async () => ({ type: "oauth", source: "manual", access: "tok" }))
+    return (messages, model = "longcat-2.0") =>
+      fetch("https://x/chat/completions", {
+        method: "POST",
+        body: JSON.stringify({ model, messages }),
+      })
+  }
+
+  const stream = (text) =>
+    new Response(`data:${JSON.stringify({ message: { type: "assistant", messageId: "m", model: "x", content: [{ type: "text", text }] } })}\n\n`, {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    })
+
+  test("a dead token on round comes back as 401, not 502", async () => {
+    _internal.forgetRateLimit()
+    const s = stub(() =>
+      new Response('{"unifyCode":1003010001,"code":401,"msg":"passport auth failed: 请重新登录"}', {
+        status: 401,
+        headers: { "content-type": "application/json" },
+      }),
+    )
+    try {
+      const chat = await client()
+      const res = await chat([{ role: "user", content: "hi" }])
+      expect(res.status).toBe(401)
+      expect(res.headers.get("x-magpie-sign-in")).toBe("expired")
+      expect((await res.json()).error.type).toBe("authentication_error")
+    } finally {
+      s.restore()
+    }
+  })
+
+  test("only the first turn sends round; the next one goes straight to turn", async () => {
+    _internal.forgetRateLimit()
+    const s = stub((path) => {
+      if (path.endsWith("/conversation/round")) {
+        return new Response('{"unifyCode":0,"code":0,"data":{"conversationId":"c1"}}', {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        })
+      }
+      if (path.endsWith("/conversation/event")) return new Response('{"unifyCode":0}', { status: 200 })
+      return stream("收到")
+    })
+    try {
+      const chat = await client()
+      const first = [{ role: "user", content: "第一句" }]
+      expect((await chat(first)).status).toBe(200)
+      const roundsAfterFirst = s.seen.filter((r) => r.path.endsWith("/conversation/round")).length
+      expect(roundsAfterFirst).toBe(1)
+
+      // the same opening message keys the same conversation, so this is turn 2
+      const second = [...first, { role: "assistant", content: "收到" }, { role: "user", content: "第二句" }]
+      expect((await chat(second)).status).toBe(200)
+      expect(s.seen.filter((r) => r.path.endsWith("/conversation/round")).length).toBe(roundsAfterFirst)
+      expect(s.seen.filter((r) => r.path.endsWith("/conversation/turn")).length).toBe(2)
+    } finally {
+      s.restore()
+    }
+  })
+
+  test("a failed round is not remembered, so a retry starts over", async () => {
+    _internal.forgetRateLimit()
+    let fail = true
+    const s = stub((path) => {
+      if (path.endsWith("/conversation/round")) {
+        return fail
+          ? new Response('{"code":500,"msg":"boom"}', { status: 500 })
+          : new Response('{"unifyCode":0,"code":0,"data":{"conversationId":"c2"}}', { status: 200 })
+      }
+      if (path.endsWith("/conversation/event")) return new Response('{"unifyCode":0}', { status: 200 })
+      return stream("好了")
+    })
+    try {
+      const chat = await client()
+      const messages = [{ role: "user", content: "会失败的第一句" }]
+      expect((await chat(messages)).status).toBe(502)
+      fail = false
+      expect((await chat(messages)).status).toBe(200)
+      expect(s.seen.filter((r) => r.path.endsWith("/conversation/round")).length).toBe(2)
+    } finally {
+      s.restore()
     }
   })
 })
