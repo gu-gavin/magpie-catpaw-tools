@@ -46,7 +46,7 @@
 | D-03 | P1 | HTTP 200 业务错误和 SSE 错误码被误判为成功 | 通用正确性 + 错误契约 | 已修复 |
 | D-04 | P1 | `liveTypes` 全局缓存导致多账号模型类型串号 | 通用正确性 | 已修复 |
 | D-05 | P1 | 用量卡片用桌面账号显示网页/手动 token 的余额 | 通用正确性 | 已修复 |
-| D-06 | P2 | 余额只作为文本，未传递结构化 `balance` | Magpie `usage` 契约 | 已确认 |
+| D-06 | P2 | 余额只作为文本，未传递结构化 `balance` | Magpie `usage` 契约 | 已修复 |
 | D-07 | P0 | `tool_choice:none` 无效，服务端工具无法保证关闭 | OpenAI 兼容 + 安全 | 已复现 |
 | D-08 | P1 | 空参数工具调用发出非法流 | OpenAI streaming 契约 | 已复现 |
 | D-09 | P2 | 命名与文案缺乏层次，老配置还会覆盖新名称 | 产品质量 + Magpie 可选展示字段 | 已确认 |
@@ -159,6 +159,7 @@
 ### D-06 余额只作为文本，未传递结构化 `balance`
 
 - **等级：** P2
+- **状态：** 已修复
 - **依据：** Magpie `auth.usage` 契约。当前字段组合不会导致加载失败，但没有使用 Magpie 为 prepaid wallet 提供的结构化能力。
 - **位置：** `index.mjs:1141`、`index.mjs:1148`
 - **现象：** 返回 `used:0`、`display:"1154.73 credit"`、`aside:true`，没有 `balance/unit`。

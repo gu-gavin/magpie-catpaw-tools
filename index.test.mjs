@@ -497,6 +497,7 @@ describe("usage identity", () => {
       expect(web.user).toBe("Web User")
       expect(manual.user).toBe("手动粘贴")
       expect(desktop.user).toBe("Desktop User")
+      expect(web.windows).toEqual([{ name: "可用积分", balance: 12.5, unit: "credit" }])
     } finally {
       globalThis.fetch = real
       if (savedPath === undefined) delete process.env.CATPAW_AUTH_PATH
@@ -504,6 +505,23 @@ describe("usage identity", () => {
       if (savedToken === undefined) delete process.env.CATPAW_TOKEN
       else process.env.CATPAW_TOKEN = savedToken
       rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test("an invalid balance is an error rather than a question mark", async () => {
+    const real = globalThis.fetch
+    globalThis.fetch = async () => new Response(JSON.stringify({
+      code: 0,
+      data: { availableCredits: "not-a-number" },
+    }), { status: 200 })
+    try {
+      const { auth } = await CatPawToolsAuthPlugin({})
+      const usage = await auth.usage(async () => ({ type: "oauth", source: "manual", access: "tok" }))
+      expect(usage.error).toContain("有效的积分")
+      expect(usage.signIn).toBe("kept")
+      expect(usage.windows).toBeUndefined()
+    } finally {
+      globalThis.fetch = real
     }
   })
 })

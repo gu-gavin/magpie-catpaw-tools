@@ -1236,6 +1236,10 @@ export async function CatPawToolsAuthPlugin({ directory } = {}) {
         const data = payload.data
         if (!data || typeof data !== "object") return { error: "妙手余额响应缺少 data", signIn: "kept" }
         const credit = data.availableCredits ?? data.credit ?? data.balance ?? data.available
+    const balance = typeof credit === "string" && credit.trim() ? Number(credit) : credit
+    if (typeof balance !== "number" || !Number.isFinite(balance) || balance < 0) {
+      return { error: "妙手余额响应没有返回有效的积分数额", signIn: "kept" }
+    }
         const plan = data.userPlan ?? {}
         // no signIn on a clean read: magpie takes that as "the sign-in is fine"
         // and clears an earlier expired mark
@@ -1245,9 +1249,8 @@ export async function CatPawToolsAuthPlugin({ directory } = {}) {
           windows: [
             {
               name: "可用积分",
-              used: 0,
-              display: `${credit ?? "?"} credit`,
-              aside: true,
+              balance,
+              unit: "credit",
               ...(plan.nextRefreshTime ? { resetsAt: plan.nextRefreshTime } : {}),
             },
           ],
