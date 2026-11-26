@@ -227,6 +227,12 @@ describe("images", () => {
     const msg = { type: "user", messageId: "same", content: [{ type: "text", text: "hi" }], finished: true }
     expect(withImages(msg, [])).toBe(msg)
   })
+
+  test("image preparation rejects non-image MIME types and oversized data", () => {
+    expect(() => _internal.prepareImage("data:text/plain;base64,YQ==")).toThrow("图片 MIME")
+    expect(() => _internal.prepareImage("data:image/png;base64,YWI=", { maxBytes: 1 })).toThrow("单张图片")
+    expect(_internal.prepareImage("https://example.com/image.png").bytes).toBe(0)
+  })
 })
 
 describe("configModel image modality", () => {
@@ -1056,6 +1062,77 @@ describe("round", () => {
     } finally {
       s.restore()
       _internal.forgetRateLimit()
+    }
+  })
+
+  test("a text-only model rejects images before any upstream call", async () => {
+    const real = globalThis.fetch
+    let called = false
+    globalThis.fetch = async () => {
+      called = true
+      throw new Error("unexpected upstream call")
+    }
+    try {
+      const res = await (await client())({
+        model: "glm-5.3",
+        messages: [{
+          role: "user",
+          content: [
+            { type: "text", text: "what is this" },
+            { type: "image_url", image_url: { url: "https://example.com/image.png" } },
+          ],
+        }],
+      })
+      expect(res.status).toBe(400)
+      expect((await res.json()).error.message).toContain("不支持图片")
+      expect(called).toBe(false)
+    } finally {
+      globalThis.fetch = real
+    }
+  })
+
+  test("too many images are rejected before upload", async () => {
+    const real = globalThis.fetch
+    let called = false
+    globalThis.fetch = async () => {
+      called = true
+      throw new Error("unexpected upstream call")
+    }
+    try {
+      const images = Array.from({ length: 9 }, (_, index) => ({
+        type: "image_url",
+        image_url: { url: `https://example.com/${index}.png` },
+      }))
+      const res = await (await client())({
+        model: "longcat-2.0",
+        messages: [{ role: "user", content: images }],
+      })
+      expect(res.status).toBe(400)
+      expect((await res.json()).error.message).toContain("最多支持")
+      expect(called).toBe(false)
+    } finally {
+      globalThis.fetch = real
+    }
+  })
+
+  test("an image upload service failure is a 502, not a 400", async () => {
+    const real = globalThis.fetch
+    globalThis.fetch = async () => new Response('{"code":500,"msg":"upload failed"}', { status: 500 })
+    try {
+      const res = await (await client())({
+        model: "longcat-2.0",
+        messages: [{
+          role: "user",
+          content: [
+            { type: "text", text: "what is this" },
+            { type: "image_url", image_url: { url: "data:image/png;base64,YQ==" } },
+          ],
+        }],
+      })
+      expect(res.status).toBe(502)
+      expect((await res.json()).error.message).toContain("图片上传失败")
+    } finally {
+      globalThis.fetch = real
     }
   })
 })

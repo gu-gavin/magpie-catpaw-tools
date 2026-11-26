@@ -59,6 +59,12 @@ const modelTypeOf = (id, token) =>
 
 const isKnownModel = (id, token) => id in MODELS || Boolean(liveLists.get(token)?.models?.[id])
 
+const modelSupportsImages = (id, token) => {
+  const live = liveLists.get(token)?.models?.[id]
+  if (live && Object.hasOwn(live, "image")) return live.image === true
+  return MODELS[id]?.image === true
+}
+
 // A model the table cannot describe (the vendor added it since this release)
 // still gets the shape every CatPaw gateway model has, rather than no limits
 // at all; the vendor enforces the real ones.
@@ -181,7 +187,7 @@ function liveModels(rows) {
       // with the badges the client draws beside it
       name: MODELS[id]?.name ?? (copy.length ? `${name} (${copy.join("、")})` : name),
       type,
-      ...(r.supportImage === true ? { image: true } : {}),
+      ...(typeof r.supportImage === "boolean" ? { image: r.supportImage } : {}),
       ...(rate !== undefined ? { rate } : {}),
       ...(free ? { free: true } : {}),
     }
@@ -535,7 +541,10 @@ function fromOpenAI(chat) {
 
     if (role === "user") {
       const parts = normalizeUserContent(msg.content)
-      if (parts.length === 0) continue
+      const imageOnly = Array.isArray(msg.content) && msg.content.some(
+        (part) => part?.type === "image_url" || part?.type === "image",
+      )
+      if (parts.length === 0 && !imageOnly) continue
       messages.push({
         type: "user",
         messageId: uuid(),
@@ -622,7 +631,7 @@ function normalizeUserContent(content) {
       } else if (c?.type === "text" && c.text) {
         parts.push({ type: "text", text: c.text })
       }
-      // images are refused in the fetch hook, so they never reach here
+      // images are validated and uploaded later in the fetch hook
     }
   }
   return parts
@@ -810,6 +819,33 @@ async function* runTurn(token, { conversationId, message, modelType, toolConfigs
 // but never reaches the model (it answers "no image attached"). Only
 // `type: "image_url"` + `imageUrl: { url }` does.
 
+const MAX_IMAGES = 8
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024
+const MAX_IMAGE_TOTAL_BYTES = 20 * 1024 * 1024
+
+class ImageInputError extends Error {}
+
+function prepareImage(url, { maxBytes = MAX_IMAGE_BYTES } = {}) {
+  if (typeof url !== "string") throw new ImageInputError("图片地址必须是字符串")
+  if (/^https?:\/\//i.test(url)) return { url, bytes: 0 }
+  const match = /^data:([^;,]+)(;base64)?,(.*)$/s.exec(url)
+  if (!match) throw new ImageInputError("妙手 CatPaw: 图片必须是 data: URI 或 http(s) 链接")
+  const mime = match[1] || "image/png"
+  if (!mime.toLowerCase().startsWith("image/")) {
+    throw new ImageInputError("妙手 CatPaw: 只接受图片 MIME 类型")
+  }
+  let bytes
+  try {
+    bytes = match[2] ? Buffer.from(match[3], "base64") : Buffer.from(decodeURIComponent(match[3]), "binary")
+  } catch {
+    throw new ImageInputError("妙手 CatPaw: 图片 data URI 无法解码")
+  }
+  if (bytes.length === 0 || bytes.length > maxBytes) {
+    throw new ImageInputError(`妙手 CatPaw: 单张图片必须在 1 字节到 ${maxBytes} 字节之间`)
+  }
+  return { url, mime, bytes }
+}
+
 // Image parts of the *latest* user turn. Earlier turns are already in the
 // server-side history, so re-sending their pictures would duplicate them.
 function lastUserImages(chat) {
@@ -841,12 +877,9 @@ function lastUserImages(chat) {
 
 // uploadImage puts the bytes on the same S3 the desktop client uses and returns
 // a URL the model can fetch. Data URIs are uploaded; http(s) URLs are reused.
-async function uploadImage(token, url, conversationId) {
-  if (/^https?:\/\//i.test(url)) return url
-  const m = /^data:([^;,]+)(;base64)?,(.*)$/s.exec(url)
-  if (!m) throw new Error("妙手 CatPaw: 图片必须是 data: URI 或 http(s) 链接")
-  const mime = m[1] || "image/png"
-  const bytes = m[2] ? Buffer.from(m[3], "base64") : Buffer.from(decodeURIComponent(m[3]), "binary")
+async function uploadImage(token, image, conversationId) {
+  if (image.bytes === 0) return { url: image.url, bytes: 0 }
+  const { mime, bytes } = image
   const name = `image-${Date.now()}.${(mime.split("/")[1] || "png").replace("jpeg", "jpg")}`
   const q = new URLSearchParams({ fileName: name, fileType: mime, conversationId })
   const res = await fetch(`${PASSPORT_BASE}/api/gateway/v1/s3/upload-image?${q}`, {
@@ -862,7 +895,7 @@ async function uploadImage(token, url, conversationId) {
       `妙手图片上传失败：HTTP ${res.status} ${JSON.stringify(payload ?? {}).slice(0, 200)}`,
     )
   }
-  return uploaded
+  return { url: uploaded, bytes: bytes.length }
 }
 
 // withImages returns the user message carrying the uploaded pictures. A message
@@ -1018,11 +1051,29 @@ export async function CatPawToolsAuthPlugin({ directory } = {}) {
             const images = continuing ? [] : lastUserImages(chat)
             let turnMessage = messageToSend
             if (images.length > 0) {
+              if (!modelSupportsImages(model, token)) {
+                return errorResponse(400, `模型 ${model} 不支持图片输入`)
+              }
+              if (images.length > MAX_IMAGES) {
+                return errorResponse(400, `最多支持 ${MAX_IMAGES} 张图片`)
+              }
+              let prepared
+              try {
+                prepared = images.map((url) => prepareImage(url))
+              } catch (e) {
+                if (e instanceof ImageInputError) return errorResponse(400, String(e.message))
+                return errorResponse(502, String(e?.message ?? e), "api_error")
+              }
+              const total = prepared.reduce((sum, image) => sum + image.bytes, 0)
+              if (total > MAX_IMAGE_TOTAL_BYTES) {
+                return errorResponse(400, `图片总大小不能超过 ${MAX_IMAGE_TOTAL_BYTES} 字节`)
+              }
               const urls = []
               try {
-                for (const img of images) urls.push(await uploadImage(token, img, conversationId))
+                for (const image of prepared) urls.push((await uploadImage(token, image, conversationId)).url)
               } catch (e) {
-                return errorResponse(400, String(e?.message ?? e))
+                if (e instanceof ImageInputError) return errorResponse(400, String(e.message))
+                return errorResponse(502, `妙手图片上传失败：${String(e?.message ?? e)}`, "api_error")
               }
               turnMessage = withImages(messageToSend, urls)
             }
@@ -1484,6 +1535,7 @@ export const _internal = {
   MODELS,
   modelTypeOf,
   isKnownModel,
+  modelSupportsImages,
   configModel,
   liveModels,
   liveListFor,
@@ -1510,6 +1562,7 @@ export const _internal = {
   createConversationStore,
   lastUserMessage,
   lastUserImages,
+  prepareImage,
   withImages,
   stepError,
 }
