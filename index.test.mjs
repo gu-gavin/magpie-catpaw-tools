@@ -590,14 +590,16 @@ describe("rate limit", () => {
 
   test("a request inside the cooldown is refused without going upstream", async () => {
     forgetRateLimit()
-    const secs = noteRateLimit(60_000)
+    const key = _internal.tokenIdentity("tok")
+    const secs = noteRateLimit(60_000, key)
     expect(secs).toBeGreaterThan(0)
-    expect(rateLimitSecondsLeft()).toBeGreaterThan(0)
+    expect(rateLimitSecondsLeft(key)).toBeGreaterThan(0)
 
     const res = await callPlugin()
     expect(res.status).toBe(429)
     expect(res.headers.get("retry-after")).toBe(String(secs))
     expect((await res.json()).error.type).toBe("rate_limit_error")
+      expect(rateLimitSecondsLeft(key)).toBeGreaterThan(0)
     forgetRateLimit()
   })
 
@@ -607,6 +609,21 @@ describe("rate limit", () => {
     expect(rateLimitSecondsLeft()).toBeGreaterThanOrEqual(0)
     forgetRateLimit()
     expect(rateLimitSecondsLeft()).toBeLessThanOrEqual(0)
+  })
+
+  test("a cooldown is scoped to one account", () => {
+    forgetRateLimit()
+    noteRateLimit(60_000, "account-a")
+    expect(rateLimitSecondsLeft()).toBe(0)
+    expect(rateLimitSecondsLeft("account-b")).toBe(0)
+    expect(rateLimitSecondsLeft("account-a")).toBeGreaterThan(0)
+    forgetRateLimit()
+  })
+
+  test("an invalid cooldown falls back to the default instead of going negative", () => {
+    forgetRateLimit()
+    expect(noteRateLimit(-1)).toBeGreaterThan(0)
+    forgetRateLimit()
   })
 
   test("a 429 from the server opens the window instead of retrying", async () => {
@@ -620,7 +637,7 @@ describe("rate limit", () => {
     try {
       const res = await callPlugin()
       expect(res.status).toBe(429)
-      expect(rateLimitSecondsLeft()).toBeGreaterThan(0)
+      expect(rateLimitSecondsLeft(_internal.tokenIdentity("tok"))).toBeGreaterThan(0)
     } finally {
       globalThis.fetch = real
       forgetRateLimit()
@@ -900,7 +917,7 @@ describe("round", () => {
       const res = await (await client())([{ role: "user", content: "hi" }])
       expect(res.status).toBe(429)
       expect(res.headers.get("retry-after")).toBeTruthy()
-      expect(_internal.rateLimitSecondsLeft()).toBeGreaterThan(0)
+      expect(_internal.rateLimitSecondsLeft(_internal.tokenIdentity("tok"))).toBeGreaterThan(0)
     } finally {
       limited.restore()
       _internal.forgetRateLimit()
@@ -1009,6 +1026,36 @@ describe("round", () => {
       expect(body).toContain('"finish_reason":"tool_calls"')
     } finally {
       s.restore()
+    }
+  })
+
+  test("one account's 429 does not block another account", async () => {
+    _internal.forgetRateLimit()
+    const s = stub((path, init) => {
+      if (path.endsWith("/conversation/round")) {
+        if (String(init?.headers?.Cookie ?? "").includes("account-a")) {
+          return new Response('{"code":429,"msg":"too many requests"}', { status: 429 })
+        }
+        return new Response('{"code":0}', { status: 200 })
+      }
+      if (path.endsWith("/conversation/event")) return new Response('{"code":0}', { status: 200 })
+      return stream("ok")
+    })
+    try {
+      const { auth } = await CatPawToolsAuthPlugin({})
+      let token = "account-a"
+      const { fetch } = await auth.loader(async () => ({ type: "oauth", source: "manual", access: token }))
+      const send = (session) => fetch("https://x/chat/completions", {
+        method: "POST",
+        headers: { "x-magpie-session": session },
+        body: JSON.stringify({ model: "longcat-2.0", messages: [{ role: "user", content: "hi" }] }),
+      })
+      expect((await send("session-a")).status).toBe(429)
+      token = "account-b"
+      expect((await send("session-b")).status).toBe(200)
+    } finally {
+      s.restore()
+      _internal.forgetRateLimit()
     }
   })
 })

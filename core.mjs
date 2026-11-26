@@ -94,15 +94,19 @@ const liveLists = new Map() // token -> { at, models }
 // endpoint and found that retrying in place only renews it, so we do not retry:
 // we remember when the window ends and fail fast, with Retry-After, until then.
 // CATPAW_RATE_LIMIT_MS overrides the guess.
-const RATE_LIMIT_MS = Number(process.env.CATPAW_RATE_LIMIT_MS) || 45_000
-let limitedUntil = 0
+const configuredRateLimit = Number(process.env.CATPAW_RATE_LIMIT_MS)
+const RATE_LIMIT_MS = Number.isFinite(configuredRateLimit) && configuredRateLimit > 0
+  ? configuredRateLimit
+  : 45_000
+const limitedUntil = new Map()
 
 const looksRateLimited = (text) => /rate.?limit|too many|请求过于频繁|429/i.test(text ?? "")
 
 // Opens a window and returns how many seconds the caller should wait.
-function noteRateLimit(ms = RATE_LIMIT_MS) {
-  limitedUntil = Math.max(limitedUntil, Date.now() + ms)
-  return Math.ceil((limitedUntil - Date.now()) / 1000)
+function noteRateLimit(ms = RATE_LIMIT_MS, key = "default") {
+  const wait = Number.isFinite(ms) && ms >= 0 ? ms : RATE_LIMIT_MS
+  limitedUntil.set(key, Math.max(limitedUntil.get(key) ?? 0, Date.now() + wait))
+  return Math.ceil((limitedUntil.get(key) - Date.now()) / 1000)
 }
 
 function retryAfterMs(value) {
@@ -113,7 +117,11 @@ function retryAfterMs(value) {
   return Number.isFinite(at) ? Math.max(0, at - Date.now()) : undefined
 }
 
-const rateLimitSecondsLeft = () => Math.max(0, Math.ceil((limitedUntil - Date.now()) / 1000))
+const rateLimitSecondsLeft = (key = "default") => {
+  const left = Math.max(0, Math.ceil(((limitedUntil.get(key) ?? 0) - Date.now()) / 1000))
+  if (left === 0) limitedUntil.delete(key)
+  return left
+}
 
 const rateLimitMessage = (sec) =>
   `妙手限制建会话频率（HTTP 429）：请等约 ${sec} 秒再发。原地重试会把窗口续期，所以插件不自动重试。`
@@ -124,10 +132,10 @@ const rateLimitedError = (sec) =>
 // One place that turns a failed step into the right status: the vendor reports
 // a spent balance and an expired login as ordinary error text, and a 429 must
 // carry Retry-After so the host backs off instead of retrying in place.
-function stepError(e) {
+function stepError(e, account = "default") {
   const status = e?.httpStatus ?? e?.code
   const detail = String(e?.message ?? e)
-  if (status === 429) return rateLimitedError(noteRateLimit(retryAfterMs(e?.retryAfter)))
+  if (status === 429) return rateLimitedError(noteRateLimit(retryAfterMs(e?.retryAfter), account))
   if (e?.quota || status === 402 || QUOTA_GATE.test(detail)) return quotaResponse(detail)
   if (status === 401 || /passport auth failed|请重新登录|登录态.*(?:失效|过期)|token.*(?:expired|invalid)/i.test(detail)) {
     return signInError(detail)
@@ -260,13 +268,13 @@ function quotaResponse(detail) {
   )
 }
 
-function gatewayFailure(step, result, { requirePayload = false } = {}) {
+function gatewayFailure(step, result, { account = "default", requirePayload = false } = {}) {
   const payload = result.payload
   const code = payload?.code ?? payload?.unifyCode
   const detail = String(payload?.msg ?? payload?.message ?? result.text ?? "").trim()
   const status = result.status
   if (status === 429 || code === 429 || looksRateLimited(detail)) {
-    return rateLimitedError(noteRateLimit(retryAfterMs(result.retryAfter)))
+    return rateLimitedError(noteRateLimit(retryAfterMs(result.retryAfter), account))
   }
   if (status === 402 || code === 402 || QUOTA_GATE.test(detail)) return quotaResponse(detail)
   if (status === 401 || code === 401 || /passport auth failed|请重新登录|登录态.*(?:失效|过期)|token.*(?:expired|invalid)/i.test(detail)) {
@@ -944,11 +952,6 @@ export async function CatPawToolsAuthPlugin({ directory } = {}) {
               return errorResponse(400, "messages is required")
             }
 
-            // A cooldown opened by an earlier 429 is still running: answer at
-            // once instead of sending another doomed request upstream.
-            const cooling = rateLimitSecondsLeft()
-            if (cooling > 0) return rateLimitedError(cooling)
-
             let token, account
             try {
               const r = await resolveToken(getAuth)
@@ -966,6 +969,11 @@ export async function CatPawToolsAuthPlugin({ directory } = {}) {
                 `unknown model "${model}" (known: ${Object.keys(MODELS).join(", ")})`,
               )
             }
+
+            // A cooldown opened by an earlier 429 is still running: answer at
+            // once instead of sending another doomed request upstream.
+            const cooling = rateLimitSecondsLeft(account)
+            if (cooling > 0) return rateLimitedError(cooling)
 
             const { messages, systemPrompt } = fromOpenAI(chat)
 
@@ -1042,7 +1050,7 @@ export async function CatPawToolsAuthPlugin({ directory } = {}) {
                 { extraHeaders: { "m-spanid": "0.2", "m-spanname": "conversation.round" } },
               ).catch((e) => ({ status: 0, text: String(e?.message ?? e) }))
 
-              const roundError = gatewayFailure("round", round, { requirePayload: true })
+              const roundError = gatewayFailure("round", round, { account, requirePayload: true })
               if (roundError) return roundError
 
               // The round landed, so the conversation exists: from here on
@@ -1056,7 +1064,7 @@ export async function CatPawToolsAuthPlugin({ directory } = {}) {
                 { extraHeaders: { "m-spanid": "0.3", "m-spanname": "conversation.event" } },
               ).catch((e) => ({ status: 0, text: String(e?.message ?? e) }))
 
-              const eventError = gatewayFailure("event", event)
+              const eventError = gatewayFailure("event", event, { account })
               if (eventError) return eventError
             }
             const chatcmpl = `chatcmpl-${uuid().slice(0, 24)}`
@@ -1139,7 +1147,7 @@ export async function CatPawToolsAuthPlugin({ directory } = {}) {
                     // headers are already out, so the status cannot change:
                     // say it in the frame instead, with the same typing the
                     // non-streaming path would have used
-                    const mapped = stepError(e)
+                    const mapped = stepError(e, account)
                     const body = await mapped.json().catch(() => null)
                     const upstream = body?.error ?? {}
                     const error = {
@@ -1189,7 +1197,7 @@ export async function CatPawToolsAuthPlugin({ directory } = {}) {
                 }
               }
             } catch (e) {
-              return stepError(e)
+              return stepError(e, account)
             }
 
             const message = { role: "assistant", content: text || null }
@@ -1484,10 +1492,11 @@ export const _internal = {
     liveLists.clear()
   },
   authCandidates,
+  tokenIdentity,
   rateLimitSecondsLeft,
   noteRateLimit,
   forgetRateLimit: () => {
-    limitedUntil = 0
+    limitedUntil.clear()
   },
   fromOpenAI,
   toToolConfigs,
