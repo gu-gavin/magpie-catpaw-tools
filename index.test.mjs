@@ -1,7 +1,7 @@
 import { test, expect, describe } from "bun:test"
 import os from "node:os"
 import path from "node:path"
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { readFile } from "node:fs/promises"
 import { _internal, CatPawToolsAuthPlugin } from "./index.mjs"
 
@@ -469,6 +469,42 @@ describe("authCandidates", () => {
         expect(authPath()).toBe(want) // nothing else exists in this environment
       },
     )
+  })
+})
+
+describe("usage identity", () => {
+  test("the balance card names the account that supplied the token", async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "catpaw-usage-"))
+    const authPath = path.join(dir, "auth.json")
+    writeFileSync(authPath, JSON.stringify({
+      auth: { accessToken: "desktop-token" },
+      account: { uid: "desktop", name: "Desktop User" },
+    }))
+    const savedPath = process.env.CATPAW_AUTH_PATH
+    const savedToken = process.env.CATPAW_TOKEN
+    const real = globalThis.fetch
+    process.env.CATPAW_AUTH_PATH = authPath
+    delete process.env.CATPAW_TOKEN
+    globalThis.fetch = async () => new Response(JSON.stringify({
+      code: 0,
+      data: { availableCredits: 12.5, userPlan: { planName: "Trial" } },
+    }), { status: 200 })
+    try {
+      const { auth } = await CatPawToolsAuthPlugin({})
+      const web = await auth.usage(async () => ({ type: "oauth", source: "web", access: "web-token", name: "Web User" }))
+      const manual = await auth.usage(async () => ({ type: "oauth", source: "manual", access: "manual-token" }))
+      const desktop = await auth.usage(async () => ({ type: "oauth", source: "desktop", access: "ignored" }))
+      expect(web.user).toBe("Web User")
+      expect(manual.user).toBe("手动粘贴")
+      expect(desktop.user).toBe("Desktop User")
+    } finally {
+      globalThis.fetch = real
+      if (savedPath === undefined) delete process.env.CATPAW_AUTH_PATH
+      else process.env.CATPAW_AUTH_PATH = savedPath
+      if (savedToken === undefined) delete process.env.CATPAW_TOKEN
+      else process.env.CATPAW_TOKEN = savedToken
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })
 

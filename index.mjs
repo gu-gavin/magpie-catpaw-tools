@@ -375,14 +375,6 @@ function readAuth() {
   return cachedAuth
 }
 
-function authAccountName() {
-  try {
-    return readAuth().name || "妙手桌面端账号"
-  } catch {
-    return "妙手桌面端账号"
-  }
-}
-
 // resolveToken: any sign-in that carries its own token wins (the web login and
 // a pasted one), otherwise the desktop client's file — which is read live, so
 // signing in again in 妙手 is picked up without restarting magpie.
@@ -1212,8 +1204,11 @@ export async function CatPawToolsAuthPlugin({ directory } = {}) {
 
       async usage(getAuth) {
         let token
+        let user
         try {
-          token = (await resolveToken(getAuth)).token
+          const resolved = await resolveToken(getAuth)
+          token = resolved.token
+          user = resolved.name
         } catch (e) {
           return { error: String(e?.message ?? e), signIn: "kept" }
         }
@@ -1246,7 +1241,7 @@ export async function CatPawToolsAuthPlugin({ directory } = {}) {
         // and clears an earlier expired mark
         return {
           plan: plan.planName || NAME,
-          user: authAccountName(),
+          user,
           windows: [
             {
               name: "可用积分",
