@@ -3,10 +3,12 @@
   "version": "0.1.0",
   "description": "OpenCode/magpie provider plugin: 妙手 CatPaw (Meituan) — chat with tool calling over its conversation protocol",
   "type": "module",
-  "main": "./index.mjs",
-  "exports": "./index.mjs",
+  "main": "./opencode.mjs",
+  "exports": "./opencode2.mjs",
   "files": [
-    "index.mjs",
+    "core.mjs",
+    "opencode.mjs",
+    "opencode2.mjs",
     "README.md"
   ],
   "keywords": [

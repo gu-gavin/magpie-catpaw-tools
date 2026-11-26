@@ -1,4 +1,4 @@
-// opencode-catpaw-tools-auth — the 妙手 (CatPaw, Meituan) provider plugin for magpie.
+// CatPaw provider core for magpie and OpenCode.
 //
 // Unlike a plain chat bridge, this plugin implements CatPaw's *agent* protocol:
 // the server decides which tool to call, the client executes it and sends the

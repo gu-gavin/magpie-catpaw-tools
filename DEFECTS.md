@@ -50,7 +50,7 @@
 | D-07 | P0 | `tool_choice:none` 无效，服务端工具无法保证关闭 | OpenAI 兼容 + 安全 | 已修复 |
 | D-08 | P1 | 空参数工具调用发出非法流 | OpenAI streaming 契约 | 已修复 |
 | D-09 | P2 | 命名与文案缺乏层次，老配置还会覆盖新名称 | 产品质量 + Magpie 可选展示字段 | 已修复 |
-| D-10 | P2 | OpenCode 官方检查器失败 | OpenCode / 官方仓库规范 | 已运行 |
+| D-10 | P2 | OpenCode 官方检查器失败 | OpenCode / 官方仓库规范 | 已修复 |
 | D-11 | P2 | 未验证的模型上下文/输出上限被声明为事实 | 产品质量 | 已确认 |
 | D-12 | P2 | 限流状态全局共享，忽略 `Retry-After` | 多账号正确性 | 已确认 |
 | D-13 | P2 | 图片缺少模型能力、MIME、大小校验，错误分类错误 | 安全 + 异常处理 | 已确认 |
@@ -235,8 +235,9 @@
 ### D-10 OpenCode 官方检查器失败
 
 - **等级：** P2；仅当继续声称兼容 OpenCode 或提交官方仓库时必须修复。
+- **状态：** 已修复
 - **依据：** OpenCode 1.x/2.x 加载契约；`magpie-community/plugins` 检查脚本。
-- **位置：** `index.mjs:1365`、`package.json:5`
+- **位置：** `opencode.mjs:1`、`opencode2.mjs:1`、`package.json:5`
 - **官方检查结果：**
   - `main exports _internal, which OpenCode 1.x takes for a plugin and refuses`
   - `OpenCode 2.x: ./index.mjs has no default {id, setup}`
@@ -392,7 +393,7 @@
 |---|---|
 | `bun test` | 45 pass，0 fail |
 | Magpie 0.1.4794 沙箱加载 | 成功；provider `catpaw-tools` 和 12 个静态模型正常出现 |
-| 官方 `scripts/check.mjs` | 2 项失败：`_internal`、缺少 OpenCode 2 默认适配器 |
+| 官方 `scripts/check.mjs` | 当前通过；修复前曾有 2 项失败 |
 | 假上游会话隔离复现 | 失败；不同 session 复用同一 `conversationId` |
 | 假上游 HTTP 200 业务错误复现 | 失败；`round code=500` 仍返回 completion 200 |
 | 假上游多账号模型类型复现 | 失败；901 被 902 覆盖 |

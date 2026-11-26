@@ -3,7 +3,7 @@ import os from "node:os"
 import path from "node:path"
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { readFile } from "node:fs/promises"
-import { _internal, CatPawToolsAuthPlugin } from "./index.mjs"
+import { _internal, CatPawToolsAuthPlugin } from "./core.mjs"
 
 const { fromOpenAI, toToolConfigs, contentToText, makeDiffer, modelTypeOf, MODELS, liveModels, rateOf, configModel } = _internal
 
