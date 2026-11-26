@@ -994,6 +994,31 @@ export async function CatPawToolsAuthPlugin({ directory } = {}) {
               return errorResponse(400, "messages is required")
             }
 
+            if (chat.response_format && chat.response_format.type !== "text") {
+              return errorResponse(400, "CatPaw does not support response_format")
+            }
+            if (chat.n != null && chat.n !== 1) return errorResponse(400, "CatPaw supports n=1 only")
+            if (chat.stop != null && chat.stop !== "" && (!Array.isArray(chat.stop) || chat.stop.length > 0)) {
+              return errorResponse(400, "CatPaw does not support stop sequences")
+            }
+            if (chat.stream_options && Object.keys(chat.stream_options).some((key) => key !== "include_usage")) {
+              return errorResponse(400, "CatPaw supports stream_options.include_usage only")
+            }
+            const ignoredParams = [
+              "max_tokens",
+              "max_completion_tokens",
+              "temperature",
+              "top_p",
+              "presence_penalty",
+              "frequency_penalty",
+              "seed",
+              "logprobs",
+              "top_logprobs",
+            ].filter((key) => chat[key] !== undefined)
+            const ignoredHeaders = ignoredParams.length
+              ? { "x-catpaw-ignored-params": ignoredParams.join(",") }
+              : {}
+
             let token, account
             try {
               const r = await resolveToken(getAuth)
@@ -1210,6 +1235,16 @@ export async function CatPawToolsAuthPlugin({ directory } = {}) {
                       }
                     }
                     controller.enqueue(chunk({}, stashed ? "tool_calls" : "stop"))
+                    if (chat.stream_options?.include_usage) {
+                      controller.enqueue(encoder.encode(`data: ${JSON.stringify({
+                        id: chatcmpl,
+                        object: "chat.completion.chunk",
+                        created,
+                        model,
+                        choices: [],
+                        usage: null,
+                      })}\n\n`))
+                    }
                     controller.enqueue(encoder.encode("data: [DONE]\n\n"))
                   } catch (e) {
                     // headers are already out, so the status cannot change:
@@ -1234,7 +1269,7 @@ export async function CatPawToolsAuthPlugin({ directory } = {}) {
               })
               return new Response(stream, {
                 status: 200,
-                headers: { "content-type": "text/event-stream" },
+                headers: { "content-type": "text/event-stream", ...ignoredHeaders },
               })
             }
 
@@ -1289,8 +1324,7 @@ export async function CatPawToolsAuthPlugin({ directory } = {}) {
                   finish_reason: toolCalls.length ? "tool_calls" : "stop",
                 },
               ],
-              usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
-            })
+            }, ignoredHeaders)
           },
         }
       },

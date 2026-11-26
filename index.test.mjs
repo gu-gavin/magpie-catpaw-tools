@@ -1210,4 +1210,70 @@ describe("round", () => {
       s.restore()
     }
   })
+
+  test("non-streaming responses omit unknown token usage", async () => {
+    _internal.forgetRateLimit()
+    const s = stub((path) => {
+      if (path.endsWith("/conversation/round")) return new Response('{"code":0}', { status: 200 })
+      if (path.endsWith("/conversation/event")) return new Response('{"code":0}', { status: 200 })
+      return stream("ok")
+    })
+    try {
+      const res = await (await client())([{ role: "user", content: "hi" }])
+      expect(res.status).toBe(200)
+      expect((await res.json()).usage).toBeUndefined()
+    } finally {
+      s.restore()
+    }
+  })
+
+  test("include_usage gets a null usage chunk instead of invented zeros", async () => {
+    _internal.forgetRateLimit()
+    const s = stub((path) => {
+      if (path.endsWith("/conversation/round")) return new Response('{"code":0}', { status: 200 })
+      if (path.endsWith("/conversation/event")) return new Response('{"code":0}', { status: 200 })
+      return stream("ok")
+    })
+    try {
+      const res = await (await client())({
+        model: "longcat-2.0",
+        stream: true,
+        stream_options: { include_usage: true },
+        messages: [{ role: "user", content: "hi" }],
+      })
+      const body = await res.text()
+      expect(body).toContain('"choices":[]')
+      expect(body).toContain('"usage":null')
+    } finally {
+      s.restore()
+    }
+  })
+
+  test("unsupported response formats are rejected and ignored params are disclosed", async () => {
+    const chat = await client()
+    const refused = await chat({
+      model: "longcat-2.0",
+      response_format: { type: "json_object" },
+      messages: [{ role: "user", content: "hi" }],
+    })
+    expect(refused.status).toBe(400)
+
+    _internal.forgetRateLimit()
+    const s = stub((path) => {
+      if (path.endsWith("/conversation/round")) return new Response('{"code":0}', { status: 200 })
+      if (path.endsWith("/conversation/event")) return new Response('{"code":0}', { status: 200 })
+      return stream("ok")
+    })
+    try {
+      const res = await chat({
+        model: "longcat-2.0",
+        max_tokens: 10,
+        messages: [{ role: "user", content: "hi" }],
+      })
+      expect(res.status).toBe(200)
+      expect(res.headers.get("x-catpaw-ignored-params")).toContain("max_tokens")
+    } finally {
+      s.restore()
+    }
+  })
 })

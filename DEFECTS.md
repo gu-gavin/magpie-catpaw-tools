@@ -55,7 +55,7 @@
 | D-12 | P2 | 限流状态全局共享，忽略 `Retry-After` | 多账号正确性 | 已修复 |
 | D-13 | P2 | 图片缺少模型能力、MIME、大小校验，错误分类错误 | 安全 + 异常处理 | 已修复 |
 | D-14 | P2 | 取消信号未贯穿，桌面登录失效状态不一致 | Magpie abort / sign-in 契约 | 已修复 |
-| D-15 | P2 | 静默忽略 OpenAI 参数，伪造零 token 用量 | OpenAI 兼容契约 | 已确认 |
+| D-15 | P2 | 静默忽略 OpenAI 参数，伪造零 token 用量 | OpenAI 兼容契约 | 已修复 |
 | D-16 | P3 | README 和包 metadata 保留旧定位与不中性措辞 | 官方仓库规范 + 文档质量 | 已确认 |
 | D-17 | P2 | 高风险路径缺少回归测试 | 工程质量 | 已确认 |
 
@@ -319,8 +319,9 @@
 ### D-15 静默忽略 OpenAI 参数，伪造零 token 用量
 
 - **等级：** P2
+- **状态：** 已修复
 - **依据：** OpenAI 兼容契约、用量数据真实性。
-- **位置：** `index.mjs:957`、`index.mjs:1105`
+- **位置：** `core.mjs:968`、`core.mjs:1169`、`core.mjs:1268`
 - **现象：**
   - `max_tokens`、`max_completion_tokens`、`stop`、`response_format`、`stream_options` 等字段被静默丢弃。
   - 非流式响应固定返回 `usage:{prompt_tokens:0,completion_tokens:0,total_tokens:0}`；官方 CatPaw 插件选择直接省略，因为零值会被当成真实统计。
