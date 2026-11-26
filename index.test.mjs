@@ -304,6 +304,30 @@ describe("conversation store", () => {
     expect(store.get("second")).toBe("two")
     expect(store.get("third")).toBe("three")
   })
+
+  test("persists no prompt or token and ignores a corrupt state file", async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "catpaw-conversation-privacy-"))
+    try {
+      _internal.createConversationStore(dir).set("account-hash/session-id", "conversation-1")
+      const saved = await readFile(path.join(dir, "catpaw-tools-conversations.json"), "utf8")
+      expect(saved).not.toContain("secret prompt")
+      expect(saved).not.toContain("secret-token")
+      writeFileSync(path.join(dir, "catpaw-tools-conversations.json"), "not json")
+      expect(_internal.createConversationStore(dir).get("account-hash/session-id")).toBeUndefined()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("package entry points", () => {
+  test("OpenCode 1.x and 2.x entries expose the expected plugin shapes", async () => {
+    const v1 = await import("./opencode.mjs")
+    const v2 = await import("./opencode2.mjs")
+    expect(typeof v1.CatPawToolsAuthPlugin).toBe("function")
+    expect(typeof v2.default?.setup).toBe("function")
+    expect(v2.default?.id).toBe("opencode-catpaw-tools-auth")
+  })
 })
 
 describe("icon", () => {
@@ -437,6 +461,22 @@ describe("account model catalogs", () => {
       expect(modelTypeOf("shared-model", "account-b")).toBe(902)
       expect(_internal.isKnownModel("only-a", "account-a")).toBe(true)
       expect(_internal.isKnownModel("only-a", "account-b")).toBe(false)
+    } finally {
+      globalThis.fetch = real
+      _internal.forgetLive()
+    }
+  })
+
+  test("a live image capability overrides the static fallback", async () => {
+    _internal.forgetLive()
+    const real = globalThis.fetch
+    globalThis.fetch = async () => new Response(JSON.stringify([
+      { modelTypeId: 107, modelTypeName: "LongCat-2.5", supportImage: false },
+    ]), { status: 200 })
+    try {
+      await _internal.liveListFor("account-image")
+      expect(_internal.modelSupportsImages("longcat-2.5", "account-image")).toBe(false)
+      expect(_internal.modelSupportsImages("longcat-2.5", "other-account")).toBe(true)
     } finally {
       globalThis.fetch = real
       _internal.forgetLive()
@@ -591,6 +631,40 @@ describe("usage identity", () => {
       else process.env.CATPAW_AUTH_PATH = savedPath
       if (savedToken === undefined) delete process.env.CATPAW_TOKEN
       else process.env.CATPAW_TOKEN = savedToken
+    }
+  })
+
+  test("an aborted usage read stops the balance request", async () => {
+    const real = globalThis.fetch
+    const controller = new AbortController()
+    let sawSignal = false
+    globalThis.fetch = async (_url, init) => {
+      sawSignal = Boolean(init?.signal)
+      return new Promise((_resolve, reject) => {
+        if (init.signal.aborted) {
+          reject(new DOMException("Aborted", "AbortError"))
+          return
+        }
+        const timer = setTimeout(() => reject(new Error("abort was not propagated")), 100)
+        init.signal.addEventListener("abort", () => {
+          clearTimeout(timer)
+          reject(new DOMException("Aborted", "AbortError"))
+        }, { once: true })
+      })
+    }
+    try {
+      const { auth } = await CatPawToolsAuthPlugin({})
+      const pending = auth.usage(
+        async () => ({ type: "oauth", source: "manual", access: "tok" }),
+        undefined,
+        { signal: controller.signal },
+      )
+      controller.abort()
+      const usage = await pending
+      expect(usage.error).toContain("Aborted")
+      expect(sawSignal).toBe(true)
+    } finally {
+      globalThis.fetch = real
     }
   })
 })
@@ -1037,6 +1111,29 @@ describe("round", () => {
         messages: [{ role: "user", content: "hi" }],
       })
       expect(res.status).toBe(502)
+    } finally {
+      s.restore()
+    }
+  })
+
+  test("an undeclared streamed tool call becomes an SSE error", async () => {
+    _internal.forgetRateLimit()
+    const s = stub((path) => {
+      if (path.endsWith("/conversation/round")) return new Response('{"code":0}', { status: 200 })
+      if (path.endsWith("/conversation/event")) return new Response('{"code":0}', { status: 200 })
+      return stream([{ type: "tool_use", toolCallId: "call-1", toolName: "server_tool", toolParams: "{}" }])
+    })
+    try {
+      const res = await (await client())({
+        model: "longcat-2.0",
+        stream: true,
+        tools: [{ type: "function", function: { name: "client_tool", parameters: {} } }],
+        messages: [{ role: "user", content: "hi" }],
+      })
+      const body = await res.text()
+      expect(body).toContain('"error"')
+      expect(body).toContain("未声明")
+      expect(body).not.toContain('"finish_reason":"tool_calls"')
     } finally {
       s.restore()
     }
