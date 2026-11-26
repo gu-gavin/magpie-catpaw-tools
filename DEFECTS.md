@@ -56,7 +56,7 @@
 | D-13 | P2 | 图片缺少模型能力、MIME、大小校验，错误分类错误 | 安全 + 异常处理 | 已修复 |
 | D-14 | P2 | 取消信号未贯穿，桌面登录失效状态不一致 | Magpie abort / sign-in 契约 | 已修复 |
 | D-15 | P2 | 静默忽略 OpenAI 参数，伪造零 token 用量 | OpenAI 兼容契约 | 已修复 |
-| D-16 | P3 | README 和包 metadata 保留旧定位与不中性措辞 | 官方仓库规范 + 文档质量 | 已确认 |
+| D-16 | P3 | README 和包 metadata 保留旧定位与不中性措辞 | 官方仓库规范 + 文档质量 | 已修复 |
 | D-17 | P2 | 高风险路径缺少回归测试 | 工程质量 | 已确认 |
 
 ## 2. 详细缺陷
@@ -336,8 +336,9 @@
 ### D-16 README 和包 metadata 保留旧定位与不中性措辞
 
 - **等级：** P3
+- **状态：** 已修复
 - **依据：** 官方社区仓库规范、文档质量。
-- **位置：** `README.md:1`、`README.md:5`、`package.json:4`、`package.json:12`
+- **位置：** `README.md:1`、`README.md:5`、`package.json:4`、`package.json:18`
 - **现象：**
   - 标题、description、keywords 强调 OpenCode，与“为 Magpie 编写”的定位不一致。
   - README 使用“假装工具调用”形容社区插件，不利于技术讨论。
@@ -396,7 +397,7 @@
 
 | 验证 | 结果 |
 |---|---|
-| `bun test` | 45 pass，0 fail |
+| `bun test` | 81 pass，0 fail |
 | Magpie 0.1.4794 沙箱加载 | 成功；provider `catpaw-tools` 和 12 个静态模型正常出现 |
 | 官方 `scripts/check.mjs` | 当前通过；修复前曾有 2 项失败 |
 | 假上游会话隔离复现 | 失败；不同 session 复用同一 `conversationId` |

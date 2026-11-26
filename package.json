@@ -1,7 +1,7 @@
 {
   "name": "opencode-catpaw-tools-auth",
   "version": "0.1.0",
-  "description": "OpenCode/magpie provider plugin: 妙手 CatPaw (Meituan) — chat with tool calling over its conversation protocol",
+  "description": "Magpie/OpenCode provider plugin for 妙手 CatPaw (Meituan): native Agent tool calls, images, live models and credit balance",
   "type": "module",
   "main": "./opencode.mjs",
   "exports": "./opencode2.mjs",
@@ -20,6 +20,10 @@
     "meituan"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gu-gavin/magpie-catpaw-tools.git"
+  },
   "scripts": {
     "test": "bun test"
   },
