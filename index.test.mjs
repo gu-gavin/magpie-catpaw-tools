@@ -1,6 +1,7 @@
 import { test, expect, describe } from "bun:test"
 import os from "node:os"
 import path from "node:path"
+import { mkdtempSync, rmSync } from "node:fs"
 import { readFile } from "node:fs/promises"
 import { _internal, CatPawToolsAuthPlugin } from "./index.mjs"
 
@@ -256,6 +257,41 @@ describe("lastUserMessage", () => {
   })
 })
 
+describe("conversation store", () => {
+  test("persists mappings across plugin host restarts", () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "catpaw-conversations-"))
+    try {
+      _internal.createConversationStore(dir).set("account/session", "conversation-1")
+      expect(_internal.createConversationStore(dir).get("account/session")).toBe("conversation-1")
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test("expires old mappings", () => {
+    let now = 1_000
+    const store = _internal.createConversationStore(undefined, { now: () => now, ttl: 100 })
+    store.set("key", "conversation-1")
+    now = 1_099
+    expect(store.get("key")).toBe("conversation-1")
+    now = 1_100
+    expect(store.get("key")).toBeUndefined()
+  })
+
+  test("keeps only the newest mappings up to its cap", () => {
+    let now = 1_000
+    const store = _internal.createConversationStore(undefined, { now: () => now, max: 2 })
+    store.set("first", "one")
+    now++
+    store.set("second", "two")
+    now++
+    store.set("third", "three")
+    expect(store.get("first")).toBeUndefined()
+    expect(store.get("second")).toBe("two")
+    expect(store.get("third")).toBe("three")
+  })
+})
+
 describe("icon", () => {
   test("the provider row gets a picture without a fetch", async () => {
     const { auth } = await CatPawToolsAuthPlugin({})
@@ -485,8 +521,8 @@ describe("round", () => {
   }
 
   // one plugin instance per test: the conversation map lives on it
-  async function client() {
-    const { auth } = await CatPawToolsAuthPlugin({})
+  async function client(directory) {
+    const { auth } = await CatPawToolsAuthPlugin({ directory })
     const { fetch } = await auth.loader(async () => ({ type: "oauth", source: "manual", access: "tok" }))
     return (messages, model = "longcat-2.0", headers = { "x-magpie-session": "test-session" }) =>
       fetch("https://x/chat/completions", {
@@ -631,6 +667,30 @@ describe("round", () => {
       expect(new Set(turns.map((r) => r.body.conversationId)).size).toBe(2)
     } finally {
       s.restore()
+    }
+  })
+
+  test("a restarted host resumes the persisted conversation", async () => {
+    _internal.forgetRateLimit()
+    const dir = mkdtempSync(path.join(os.tmpdir(), "catpaw-restart-"))
+    const s = stub((path) => {
+      if (path.endsWith("/conversation/round")) return new Response('{"code":0}', { status: 200 })
+      if (path.endsWith("/conversation/event")) return new Response('{"code":0}', { status: 200 })
+      return stream("ok")
+    })
+    try {
+      const first = await client(dir)
+      const opening = [{ role: "user", content: "remember this" }]
+      await first(opening)
+      const second = await client(dir)
+      await second([...opening, { role: "assistant", content: "ok" }, { role: "user", content: "continue" }])
+      expect(s.seen.filter((r) => r.path.endsWith("/conversation/round"))).toHaveLength(1)
+      const turns = s.seen.filter((r) => r.path.endsWith("/conversation/turn"))
+      expect(turns).toHaveLength(2)
+      expect(new Set(turns.map((r) => r.body.conversationId)).size).toBe(1)
+    } finally {
+      s.restore()
+      rmSync(dir, { recursive: true, force: true })
     }
   })
 

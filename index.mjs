@@ -384,6 +384,67 @@ function conversationKey(account, headers) {
   return JSON.stringify([account, session, subagent])
 }
 
+const CONVERSATION_TTL = 7 * 24 * 60 * 60 * 1000
+const CONVERSATION_MAX = 500
+
+function createConversationStore(directory, { now = Date.now, ttl = CONVERSATION_TTL, max = CONVERSATION_MAX } = {}) {
+  const items = new Map()
+  const file = typeof directory === "string" && directory
+    ? path.join(directory, "catpaw-tools-conversations.json")
+    : null
+
+  const prune = () => {
+    for (const [key, value] of items) {
+      if (!Number.isFinite(value.at) || now() - value.at >= ttl) items.delete(key)
+    }
+    while (items.size > max) items.delete(items.keys().next().value)
+  }
+
+  const save = () => {
+    if (!file) return
+    try {
+      fs.mkdirSync(path.dirname(file), { recursive: true })
+      const temp = `${file}.${process.pid}.tmp`
+      fs.writeFileSync(temp, JSON.stringify({ version: 1, items: [...items] }), { mode: 0o600 })
+      fs.renameSync(temp, file)
+    } catch {}
+  }
+
+  if (file) {
+    try {
+      const data = JSON.parse(fs.readFileSync(file, "utf8"))
+      for (const entry of Array.isArray(data?.items) ? data.items : []) {
+        if (!Array.isArray(entry) || entry.length !== 2) continue
+        const [key, value] = entry
+        if (typeof key !== "string" || typeof value?.id !== "string" || !Number.isFinite(value.at)) continue
+        items.set(key, { id: value.id, at: value.at })
+      }
+    } catch {}
+  }
+  prune()
+
+  return {
+    get(key) {
+      if (!key) return undefined
+      const value = items.get(key)
+      if (!value) return undefined
+      if (now() - value.at >= ttl) {
+        items.delete(key)
+        save()
+        return undefined
+      }
+      return value.id
+    },
+    set(key, id) {
+      if (!key) return
+      items.delete(key)
+      items.set(key, { id, at: now() })
+      prune()
+      save()
+    },
+  }
+}
+
 // ── the gateway ────────────────────────────────────────────────────────────
 
 // Every value here is what the official desktop client puts on the wire.
@@ -806,11 +867,11 @@ function makeDiffer() {
 
 // ── the plugin ─────────────────────────────────────────────────────────────
 
-export async function CatPawToolsAuthPlugin({ client } = {}) {
+export async function CatPawToolsAuthPlugin({ directory } = {}) {
   // conversationId per magpie session, so multi-turn tool loops stay in one
   // conversation. Keyed by chat id, which the fetch hook derives from the
   // request body's first user message when no session header is present.
-  const conversations = new Map()
+  const conversations = createConversationStore(directory)
 
   return {
     auth: {
@@ -1403,6 +1464,7 @@ export const _internal = {
   readAuth,
   authPath,
   conversationKey,
+  createConversationStore,
   lastUserMessage,
   lastUserImages,
   withImages,
