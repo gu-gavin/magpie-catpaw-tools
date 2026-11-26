@@ -153,11 +153,11 @@ describe("makeDiffer", () => {
 })
 
 describe("models", () => {
-  test("every model declares a numeric type and a real context window", () => {
+  test("every model declares a numeric type without inventing context limits", () => {
     for (const [id, m] of Object.entries(MODELS)) {
       expect(typeof m.type).toBe("number")
-      expect(m.context).toBeGreaterThan(0)
-      expect(m.output).toBeGreaterThan(0)
+      expect(m.context).toBeUndefined()
+      expect(m.output).toBeUndefined()
       void id
     }
   })
@@ -406,9 +406,9 @@ describe("rateOf", () => {
 })
 
 describe("configModel", () => {
-  test("a model the table cannot describe still gets limits", () => {
+  test("a model the table cannot describe does not invent limits", () => {
     const m = configModel("brand-new")
-    expect(m.limit.context).toBe(1000000)
+    expect(m.limit).toBeUndefined()
     expect(m.tool_call).toBe(true)
   })
 })

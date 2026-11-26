@@ -33,23 +33,22 @@ const PASSPORT_BASE = process.env.CATPAW_PASSPORT_BASE || "https://catx.nocode.c
 // ── models ─────────────────────────────────────────────────────────────────
 //
 // modelType ids verified one by one against the live gateway on 2026-10-23 by
-// reading the `model` field of the first SSE frame. Context/output sizes come
-// from models.dev for the same model family; CatPaw publishes no per-model
-// window of its own, so these are the model's own figures, not invented ones.
+// reading the `model` field of the first SSE frame. CatPaw publishes no
+// per-model context/output windows, so the plugin does not assert them.
 
 const MODELS = {
-  "longcat-2.5": { name: "LongCat-2.5", type: 107, context: 1048576, output: 131072, reasoning: true, image: true },
-  "longcat-2.0": { name: "LongCat-2.0", type: 77, context: 1048576, output: 131072, reasoning: true, image: true },
-  "glm-5.3": { name: "GLM-5.3", type: 89, context: 1000000, output: 131072, reasoning: true, image: false },
-  "glm-5.3-flash": { name: "GLM-5.3-Flash", type: 91, context: 1000000, output: 131072, reasoning: true, image: true },
-  "glm-5.3-flashx": { name: "GLM-5.3-FlashX", type: 98, context: 1000000, output: 131072, reasoning: true, image: true },
-  "deepseek-v4.1-flash": { name: "DeepSeek-V4.1-Flash", type: 97, context: 1000000, output: 384000, reasoning: true, image: true },
-  "deepseek-v4-pro": { name: "DeepSeek-V4-Pro", type: 64, context: 1000000, output: 384000, reasoning: true, image: false },
-  "minimax-m3.1-flash": { name: "MiniMax-M3.1-Flash", type: 10002518, context: 1000000, output: 524288, reasoning: true, image: false },
-  "minimax-m3": { name: "MiniMax-M3", type: 70, context: 1000000, output: 524288, reasoning: true, image: true },
-  "kimi-k3.1-pro": { name: "Kimi-K3.1-Pro", type: 10002533, context: 1048576, output: 131072, reasoning: true, image: true },
-  "kimi-k3": { name: "Kimi-K3", type: 83, context: 1048576, output: 131072, reasoning: true, image: true },
-  "auto": { name: "Auto (妙手自动选择)", type: 0, context: 1000000, output: 131072, reasoning: true, image: false },
+  "longcat-2.5": { name: "LongCat-2.5", type: 107, reasoning: true, image: true },
+  "longcat-2.0": { name: "LongCat-2.0", type: 77, reasoning: true, image: true },
+  "glm-5.3": { name: "GLM-5.3", type: 89, reasoning: true, image: false },
+  "glm-5.3-flash": { name: "GLM-5.3-Flash", type: 91, reasoning: true, image: true },
+  "glm-5.3-flashx": { name: "GLM-5.3-FlashX", type: 98, reasoning: true, image: true },
+  "deepseek-v4.1-flash": { name: "DeepSeek-V4.1-Flash", type: 97, reasoning: true, image: true },
+  "deepseek-v4-pro": { name: "DeepSeek-V4-Pro", type: 64, reasoning: true, image: false },
+  "minimax-m3.1-flash": { name: "MiniMax-M3.1-Flash", type: 10002518, reasoning: true, image: false },
+  "minimax-m3": { name: "MiniMax-M3", type: 70, reasoning: true, image: true },
+  "kimi-k3.1-pro": { name: "Kimi-K3.1-Pro", type: 10002533, reasoning: true, image: true },
+  "kimi-k3": { name: "Kimi-K3", type: 83, reasoning: true, image: true },
+  "auto": { name: "Auto (妙手自动选择)", type: 0, reasoning: true, image: false },
 }
 
 // the vendor's own id wins when the live list has it: modelTypeIds get
@@ -66,14 +65,11 @@ const isKnownModel = (id, token) => id in MODELS || Boolean(liveLists.get(token)
 function configModel(id, m = MODELS[id]) {
   const base = {
     name: m?.name ?? id,
-    context: 1000000,
-    output: 131072,
     reasoning: true,
     ...(m ?? {}),
   }
   return {
     name: base.name,
-    limit: { context: base.context, output: base.output },
     reasoning: base.reasoning,
     tool_call: true,
     modalities: {
