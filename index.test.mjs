@@ -950,4 +950,27 @@ describe("round", () => {
     expect(res.status).toBe(400)
     expect((await res.json()).error.message).toContain("tool_choice")
   })
+
+  test("an empty-argument tool call still emits its streamed metadata", async () => {
+    _internal.forgetRateLimit()
+    const s = stub((path) => {
+      if (path.endsWith("/conversation/round")) return new Response('{"code":0}', { status: 200 })
+      if (path.endsWith("/conversation/event")) return new Response('{"code":0}', { status: 200 })
+      return stream([{ type: "tool_use", toolCallId: "call-empty", toolName: "noop", toolParams: "" }])
+    })
+    try {
+      const res = await (await client())({
+        model: "longcat-2.0",
+        stream: true,
+        tools: [{ type: "function", function: { name: "noop", parameters: {} } }],
+        messages: [{ role: "user", content: "call noop" }],
+      })
+      const body = await res.text()
+      expect(body).toContain("call-empty")
+      expect(body).toContain('"arguments":""')
+      expect(body).toContain('"finish_reason":"tool_calls"')
+    } finally {
+      s.restore()
+    }
+  })
 })

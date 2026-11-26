@@ -48,7 +48,7 @@
 | D-05 | P1 | 用量卡片用桌面账号显示网页/手动 token 的余额 | 通用正确性 | 已修复 |
 | D-06 | P2 | 余额只作为文本，未传递结构化 `balance` | Magpie `usage` 契约 | 已修复 |
 | D-07 | P0 | `tool_choice:none` 无效，服务端工具无法保证关闭 | OpenAI 兼容 + 安全 | 已修复 |
-| D-08 | P1 | 空参数工具调用发出非法流 | OpenAI streaming 契约 | 已复现 |
+| D-08 | P1 | 空参数工具调用发出非法流 | OpenAI streaming 契约 | 已修复 |
 | D-09 | P2 | 命名与文案缺乏层次，老配置还会覆盖新名称 | 产品质量 + Magpie 可选展示字段 | 已确认 |
 | D-10 | P2 | OpenCode 官方检查器失败 | OpenCode / 官方仓库规范 | 已运行 |
 | D-11 | P2 | 未验证的模型上下文/输出上限被声明为事实 | 产品质量 | 已确认 |
@@ -200,6 +200,7 @@
 ### D-08 空参数工具调用产生不合法流
 
 - **等级：** P1
+- **状态：** 已修复
 - **依据：** OpenAI streaming 契约、客户端正确性。
 - **位置：** `index.mjs:763`、`index.mjs:1002`、`index.mjs:1026`
 - **现象：** `makeDiffer.params()` 在首次收到空字符串时返回 `null`，因此不会发送包含工具 `id/name` 的首个 chunk；但 `stashed` 已非空，最终仍发送 `finish_reason:"tool_calls"`。

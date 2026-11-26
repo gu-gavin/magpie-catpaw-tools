@@ -1113,9 +1113,10 @@ export async function CatPawToolsAuthPlugin({ directory } = {}) {
                         } else if (c.type === "tool_use") {
                           requireDeclaredTool(c, allowedTools)
                           stashed = c
+                          const first = !toolIndex.has(c.toolCallId)
                           const idx = indexOf(c.toolCallId)
                           const d = differ.params(c.toolCallId, c.toolParams ?? "")
-                          if (d) {
+                          if (d || first) {
                             controller.enqueue(
                               chunk(
                                 {
@@ -1124,7 +1125,7 @@ export async function CatPawToolsAuthPlugin({ directory } = {}) {
                                       index: idx,
                                       id: c.toolCallId,
                                       type: "function",
-                                      function: { name: c.toolName, arguments: d },
+                                      function: { name: c.toolName, arguments: d ?? "" },
                                     },
                                   ],
                                 },
