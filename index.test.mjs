@@ -576,6 +576,45 @@ describe("usage identity", () => {
       globalThis.fetch = real
     }
   })
+
+  test("a missing desktop auth file marks the usage sign-in expired", async () => {
+    const savedPath = process.env.CATPAW_AUTH_PATH
+    const savedToken = process.env.CATPAW_TOKEN
+    process.env.CATPAW_AUTH_PATH = path.join(os.tmpdir(), `missing-catpaw-${Date.now()}.json`)
+    delete process.env.CATPAW_TOKEN
+    try {
+      const { auth } = await CatPawToolsAuthPlugin({})
+      const usage = await auth.usage(async () => ({ type: "oauth", source: "desktop", access: "ignored" }))
+      expect(usage.signIn).toBe("expired")
+    } finally {
+      if (savedPath === undefined) delete process.env.CATPAW_AUTH_PATH
+      else process.env.CATPAW_AUTH_PATH = savedPath
+      if (savedToken === undefined) delete process.env.CATPAW_TOKEN
+      else process.env.CATPAW_TOKEN = savedToken
+    }
+  })
+})
+
+describe("web login cancellation", () => {
+  test("an aborted poll stops the login callback immediately", async () => {
+    const real = globalThis.fetch
+    globalThis.fetch = async (url) => {
+      if (String(url).includes("login-config")) {
+        return new Response(JSON.stringify({ data: { loginEntryUrl: "https://example.com/login" } }), { status: 200 })
+      }
+      throw new DOMException("Aborted", "AbortError")
+    }
+    try {
+      const { auth } = await CatPawToolsAuthPlugin({})
+      const method = auth.methods.find((entry) => entry.label.startsWith("网页登录"))
+      const started = await method.authorize()
+      const result = await started.callback()
+      expect(result.type).toBe("failed")
+      expect(result.error).toContain("已取消")
+    } finally {
+      globalThis.fetch = real
+    }
+  })
 })
 
 describe("rate limit", () => {
@@ -672,10 +711,11 @@ describe("round", () => {
   async function client(directory) {
     const { auth } = await CatPawToolsAuthPlugin({ directory })
     const { fetch } = await auth.loader(async () => ({ type: "oauth", source: "manual", access: "tok" }))
-    return (messages, model = "longcat-2.0", headers = { "x-magpie-session": "test-session" }) =>
+    return (messages, model = "longcat-2.0", headers = { "x-magpie-session": "test-session" }, signal) =>
       fetch("https://x/chat/completions", {
         method: "POST",
         headers,
+        signal,
         body: JSON.stringify(Array.isArray(messages) ? { model, messages } : messages),
       })
   }
@@ -1133,6 +1173,41 @@ describe("round", () => {
       expect((await res.json()).error.message).toContain("图片上传失败")
     } finally {
       globalThis.fetch = real
+    }
+  })
+
+  test("an aborted request stops round before event or turn", async () => {
+    _internal.forgetRateLimit()
+    const controller = new AbortController()
+    let sawSignal = false
+    const s = stub((path, init) => {
+      if (path.endsWith("/conversation/round")) {
+        sawSignal = Boolean(init?.signal)
+        return new Promise((_resolve, reject) => {
+          const timer = setTimeout(() => reject(new Error("abort was not propagated")), 100)
+          init.signal.addEventListener("abort", () => {
+            clearTimeout(timer)
+            reject(new DOMException("Aborted", "AbortError"))
+          }, { once: true })
+        })
+      }
+      return stream("should not run")
+    })
+    try {
+      const pending = (await client())(
+        [{ role: "user", content: "hi" }],
+        "longcat-2.0",
+        { "x-magpie-session": "abort-session" },
+        controller.signal,
+      )
+      controller.abort()
+      const res = await pending
+      expect(res.status).toBe(502)
+      expect(sawSignal).toBe(true)
+      expect(s.seen.some((r) => r.path.endsWith("/conversation/event"))).toBe(false)
+      expect(s.seen.some((r) => r.path.endsWith("/conversation/turn"))).toBe(false)
+    } finally {
+      s.restore()
     }
   })
 })

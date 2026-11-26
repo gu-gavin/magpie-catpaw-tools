@@ -414,6 +414,15 @@ function requestHeaders(input, init) {
   return new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined))
 }
 
+function requestSignal(input, init) {
+  return init?.signal ?? (input instanceof Request ? input.signal : undefined)
+}
+
+function timedSignal(signal, ms) {
+  const timeout = AbortSignal.timeout(ms)
+  return signal ? AbortSignal.any([signal, timeout]) : timeout
+}
+
 function conversationKey(account, headers) {
   const session = headers.get("x-magpie-session")?.trim() ?? ""
   const subagent = headers.get("x-magpie-subagent")?.trim() ?? ""
@@ -877,7 +886,7 @@ function lastUserImages(chat) {
 
 // uploadImage puts the bytes on the same S3 the desktop client uses and returns
 // a URL the model can fetch. Data URIs are uploaded; http(s) URLs are reused.
-async function uploadImage(token, image, conversationId) {
+async function uploadImage(token, image, conversationId, signal) {
   if (image.bytes === 0) return { url: image.url, bytes: 0 }
   const { mime, bytes } = image
   const name = `image-${Date.now()}.${(mime.split("/")[1] || "png").replace("jpeg", "jpg")}`
@@ -886,7 +895,7 @@ async function uploadImage(token, image, conversationId) {
     method: "POST",
     headers: { "X-Auth-Token": token, "content-type": "text/plain" },
     body: bytes.toString("base64"),
-    signal: AbortSignal.timeout(30_000),
+    signal: timedSignal(signal, 30_000),
   })
   const payload = await res.json().catch(() => null)
   const uploaded = payload?.data?.url
@@ -1070,7 +1079,9 @@ export async function CatPawToolsAuthPlugin({ directory } = {}) {
               }
               const urls = []
               try {
-                for (const image of prepared) urls.push((await uploadImage(token, image, conversationId)).url)
+                for (const image of prepared) {
+                  urls.push((await uploadImage(token, image, conversationId, requestSignal(input, init))).url)
+                }
               } catch (e) {
                 if (e instanceof ImageInputError) return errorResponse(400, String(e.message))
                 return errorResponse(502, `妙手图片上传失败：${String(e?.message ?? e)}`, "api_error")
@@ -1098,7 +1109,10 @@ export async function CatPawToolsAuthPlugin({ directory } = {}) {
                   repositories: [],
                 },
                 token,
-                { extraHeaders: { "m-spanid": "0.2", "m-spanname": "conversation.round" } },
+                {
+                  extraHeaders: { "m-spanid": "0.2", "m-spanname": "conversation.round" },
+                  signal: requestSignal(input, init),
+                },
               ).catch((e) => ({ status: 0, text: String(e?.message ?? e) }))
 
               const roundError = gatewayFailure("round", round, { account, requirePayload: true })
@@ -1112,7 +1126,10 @@ export async function CatPawToolsAuthPlugin({ directory } = {}) {
                 "/api/agent/conversation/event",
                 { conversationId, eventType: "conversation", data: { status: "running" } },
                 token,
-                { extraHeaders: { "m-spanid": "0.3", "m-spanname": "conversation.event" } },
+                {
+                  extraHeaders: { "m-spanid": "0.3", "m-spanname": "conversation.event" },
+                  signal: requestSignal(input, init),
+                },
               ).catch((e) => ({ status: 0, text: String(e?.message ?? e) }))
 
               const eventError = gatewayFailure("event", event, { account })
@@ -1158,7 +1175,7 @@ export async function CatPawToolsAuthPlugin({ directory } = {}) {
                       modelType: modelTypeOf(model, token),
                       toolConfigs,
                       systemPrompt,
-                      signal: init.signal,
+                      signal: requestSignal(input, init),
                     })) {
                       for (const c of msg.content ?? []) {
                         if (c.type === "text") {
@@ -1232,7 +1249,7 @@ export async function CatPawToolsAuthPlugin({ directory } = {}) {
                 modelType: modelTypeOf(model, token),
                 toolConfigs,
                 systemPrompt,
-                signal: init.signal,
+                signal: requestSignal(input, init),
               })) {
                 for (const c of msg.content ?? []) {
                   if (c.type === "text") {
@@ -1278,7 +1295,7 @@ export async function CatPawToolsAuthPlugin({ directory } = {}) {
         }
       },
 
-      async usage(getAuth) {
+      async usage(getAuth, _provider, { signal } = {}) {
         let token
         let user
         try {
@@ -1286,7 +1303,7 @@ export async function CatPawToolsAuthPlugin({ directory } = {}) {
           token = resolved.token
           user = resolved.name
         } catch (e) {
-          return { error: String(e?.message ?? e), signIn: "kept" }
+          return { error: String(e?.message ?? e), signIn: e instanceof SignedOut ? "expired" : "kept" }
         }
         let res
         try {
@@ -1296,7 +1313,7 @@ export async function CatPawToolsAuthPlugin({ directory } = {}) {
               "X-Auth-Token": token,
               "gray-set": "new-agent-sdk",
             },
-            signal: AbortSignal.timeout(20_000),
+            signal: timedSignal(signal, 20_000),
           })
         } catch (e) {
           return { error: String(e?.message ?? e), signIn: "kept" }
@@ -1424,7 +1441,9 @@ export async function CatPawToolsAuthPlugin({ directory } = {}) {
                         source: "web",
                       }
                     }
-                  } catch {}
+                  } catch (e) {
+                    if (e?.name === "AbortError") return { type: "failed", error: "网页登录已取消" }
+                  }
                 }
                 return { type: "failed", error: "网页登录超时（3 分钟内未取到登录态），请重试" }
               },
@@ -1559,6 +1578,7 @@ export const _internal = {
   readAuth,
   authPath,
   conversationKey,
+  requestSignal,
   createConversationStore,
   lastUserMessage,
   lastUserImages,
