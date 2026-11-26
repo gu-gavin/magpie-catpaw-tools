@@ -4,7 +4,7 @@ import path from "node:path"
 import { readFile } from "node:fs/promises"
 import { _internal, CatPawToolsAuthPlugin } from "./index.mjs"
 
-const { fromOpenAI, toToolConfigs, contentToText, makeDiffer, modelTypeOf, MODELS, chatId, liveModels, rateOf, configModel } = _internal
+const { fromOpenAI, toToolConfigs, contentToText, makeDiffer, modelTypeOf, MODELS, liveModels, rateOf, configModel } = _internal
 
 describe("contentToText", () => {
   test("string passes through", () => {
@@ -226,14 +226,6 @@ describe("configModel image modality", () => {
   })
   test("a text-only model does not", () => {
     expect(configModel("glm-5.3").modalities.input).toEqual(["text"])
-  })
-})
-
-describe("chatId", () => {
-  test("the opening user message keys the conversation", () => {
-    const a = chatId({ messages: [{ role: "user", content: "make a plan" }, { role: "assistant", content: "ok" }] })
-    const b = chatId({ messages: [{ role: "user", content: "make a plan" }, { role: "assistant", content: "ok" }, { role: "user", content: "go on" }] })
-    expect(a).toBe(b)
   })
 })
 
@@ -496,9 +488,10 @@ describe("round", () => {
   async function client() {
     const { auth } = await CatPawToolsAuthPlugin({})
     const { fetch } = await auth.loader(async () => ({ type: "oauth", source: "manual", access: "tok" }))
-    return (messages, model = "longcat-2.0") =>
+    return (messages, model = "longcat-2.0", headers = { "x-magpie-session": "test-session" }) =>
       fetch("https://x/chat/completions", {
         method: "POST",
+        headers,
         body: JSON.stringify({ model, messages }),
       })
   }
@@ -552,6 +545,90 @@ describe("round", () => {
       expect((await chat(second)).status).toBe(200)
       expect(s.seen.filter((r) => r.path.endsWith("/conversation/round")).length).toBe(roundsAfterFirst)
       expect(s.seen.filter((r) => r.path.endsWith("/conversation/turn")).length).toBe(2)
+    } finally {
+      s.restore()
+    }
+  })
+
+  test("different sessions with the same opening message do not share a conversation", async () => {
+    _internal.forgetRateLimit()
+    const s = stub((path) => {
+      if (path.endsWith("/conversation/round")) return new Response('{"code":0}', { status: 200 })
+      if (path.endsWith("/conversation/event")) return new Response('{"code":0}', { status: 200 })
+      return stream("ok")
+    })
+    try {
+      const chat = await client()
+      const messages = [{ role: "user", content: "same opening" }]
+      await chat(messages, "longcat-2.0", { "x-magpie-session": "session-a" })
+      await chat(messages, "longcat-2.0", { "x-magpie-session": "session-b" })
+      const rounds = s.seen.filter((r) => r.path.endsWith("/conversation/round"))
+      const turns = s.seen.filter((r) => r.path.endsWith("/conversation/turn"))
+      expect(rounds).toHaveLength(2)
+      expect(new Set(turns.map((r) => r.body.conversationId)).size).toBe(2)
+    } finally {
+      s.restore()
+    }
+  })
+
+  test("subagents of one session do not share a conversation", async () => {
+    _internal.forgetRateLimit()
+    const s = stub((path) => {
+      if (path.endsWith("/conversation/round")) return new Response('{"code":0}', { status: 200 })
+      if (path.endsWith("/conversation/event")) return new Response('{"code":0}', { status: 200 })
+      return stream("ok")
+    })
+    try {
+      const chat = await client()
+      const messages = [{ role: "user", content: "same opening" }]
+      await chat(messages, "longcat-2.0", { "x-magpie-session": "lead", "x-magpie-subagent": "child-a" })
+      await chat(messages, "longcat-2.0", { "x-magpie-session": "lead", "x-magpie-subagent": "child-b" })
+      const turns = s.seen.filter((r) => r.path.endsWith("/conversation/turn"))
+      expect(new Set(turns.map((r) => r.body.conversationId)).size).toBe(2)
+    } finally {
+      s.restore()
+    }
+  })
+
+  test("requests without a session do not reuse a conversation", async () => {
+    _internal.forgetRateLimit()
+    const s = stub((path) => {
+      if (path.endsWith("/conversation/round")) return new Response('{"code":0}', { status: 200 })
+      if (path.endsWith("/conversation/event")) return new Response('{"code":0}', { status: 200 })
+      return stream("ok")
+    })
+    try {
+      const chat = await client()
+      const messages = [{ role: "user", content: "same opening" }]
+      await chat(messages, "longcat-2.0", {})
+      await chat(messages, "longcat-2.0", {})
+      expect(s.seen.filter((r) => r.path.endsWith("/conversation/round"))).toHaveLength(2)
+    } finally {
+      s.restore()
+    }
+  })
+
+  test("the same session on two accounts does not share a conversation", async () => {
+    _internal.forgetRateLimit()
+    const s = stub((path) => {
+      if (path.endsWith("/conversation/round")) return new Response('{"code":0}', { status: 200 })
+      if (path.endsWith("/conversation/event")) return new Response('{"code":0}', { status: 200 })
+      return stream("ok")
+    })
+    try {
+      const { auth } = await CatPawToolsAuthPlugin({})
+      let token = "account-a"
+      const { fetch } = await auth.loader(async () => ({ type: "oauth", source: "manual", access: token }))
+      const send = () => fetch("https://x/chat/completions", {
+        method: "POST",
+        headers: { "x-magpie-session": "shared-session" },
+        body: JSON.stringify({ model: "longcat-2.0", messages: [{ role: "user", content: "same opening" }] }),
+      })
+      await send()
+      token = "account-b"
+      await send()
+      const turns = s.seen.filter((r) => r.path.endsWith("/conversation/turn"))
+      expect(new Set(turns.map((r) => r.body.conversationId)).size).toBe(2)
     } finally {
       s.restore()
     }

@@ -267,6 +267,7 @@ const uuid = () => crypto.randomUUID().replace(/-/g, "")
 const fs = await import("node:fs")
 const os = await import("node:os")
 const path = await import("node:path")
+const { createHash } = await import("node:crypto")
 
 // 妙手 is a VS Code-derived app (its product config carries applicationName
 // "catpaw-moon" and dataFolderName ".meituan-catpaw"), so its data folder
@@ -355,15 +356,32 @@ async function resolveToken(getAuth) {
   // A pasted/enved token is the escape hatch when the desktop client isn't
   // signed in but the user still has an accessToken to hand over.
   const pasted = process.env.CATPAW_TOKEN?.trim()
-  if (pasted) return { token: pasted, name: "手动粘贴" }
+  if (pasted) return { token: pasted, name: "手动粘贴", account: tokenIdentity(pasted) }
 
   const a = await getAuth()
   if (a?.type === "oauth" && a.access && a.source !== "desktop") {
     const name = a.name || a.accountId || (a.source === "manual" ? "手动粘贴" : "网页登录")
-    return { token: a.access, name }
+    return { token: a.access, name, account: String(a.uid || a.accountId || tokenIdentity(a.access)) }
   }
   const file = readAuth()
-  return { token: file.token, name: file.name || "妙手桌面端账号" }
+  return {
+    token: file.token,
+    name: file.name || "妙手桌面端账号",
+    account: file.uid || tokenIdentity(file.token),
+  }
+}
+
+const tokenIdentity = (token) => createHash("sha256").update(String(token)).digest("hex").slice(0, 24)
+
+function requestHeaders(input, init) {
+  return new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined))
+}
+
+function conversationKey(account, headers) {
+  const session = headers.get("x-magpie-session")?.trim() ?? ""
+  const subagent = headers.get("x-magpie-subagent")?.trim() ?? ""
+  if (!session && !subagent) return null
+  return JSON.stringify([account, session, subagent])
 }
 
 // ── the gateway ────────────────────────────────────────────────────────────
@@ -839,11 +857,11 @@ export async function CatPawToolsAuthPlugin({ client } = {}) {
             const cooling = rateLimitSecondsLeft()
             if (cooling > 0) return rateLimitedError(cooling)
 
-            let token, accountName
+            let token, account
             try {
               const r = await resolveToken(getAuth)
               token = r.token
-              accountName = r.name
+              account = r.account
             } catch (e) {
               if (e instanceof SignedOut) return signInError(String(e.message))
               return errorResponse(502, String(e?.message ?? e), "api_error")
@@ -860,7 +878,10 @@ export async function CatPawToolsAuthPlugin({ client } = {}) {
             const tail = messages[messages.length - 1]
             const continuing = tail.type === "tool"
 
-            const sessionKey = chatId(chat)
+            const sessionKey = conversationKey(account, requestHeaders(input, init))
+            if (continuing && !sessionKey) {
+              return errorResponse(400, "tool continuation requires a Magpie session")
+            }
             let conversationId = conversations.get(sessionKey)
             const fresh = !conversationId
             // Only remembered once the server has accepted the conversation:
@@ -938,7 +959,7 @@ export async function CatPawToolsAuthPlugin({ client } = {}) {
 
               // The round landed, so the conversation exists: from here on
               // later turns stream into it without another `round`.
-              conversations.set(sessionKey, conversationId)
+              if (sessionKey) conversations.set(sessionKey, conversationId)
 
               const event = await post(
                 "/api/agent/conversation/event",
@@ -1352,15 +1373,6 @@ function lastUserMessage(messages) {
   return messages[0]
 }
 
-// A stable key for one conversation: magpie does not hand a session id to the
-// provider fetch, so the opening user message is used. Consecutive rounds in a
-// chat repeat the same opening message, which keeps the key stable.
-function chatId(chat) {
-  const first = (chat.messages ?? []).find((m) => m.role === "user")
-  const text = contentToText(first?.content).slice(0, 200)
-  return text || "session"
-}
-
 // for tests
 export const _internal = {
   ID,
@@ -1390,7 +1402,7 @@ export const _internal = {
   gatewayHeaders,
   readAuth,
   authPath,
-  chatId,
+  conversationKey,
   lastUserMessage,
   lastUserImages,
   withImages,
