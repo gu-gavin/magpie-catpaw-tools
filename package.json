@@ -1,6 +1,6 @@
 {
   "name": "opencode-catpaw-tools-auth",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Magpie/OpenCode provider plugin for 妙手 CatPaw (Meituan): native Agent tool calls, images, live models and credit balance",
   "type": "module",
   "main": "./opencode.mjs",
