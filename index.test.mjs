@@ -382,6 +382,31 @@ describe("configModel", () => {
   })
 })
 
+describe("account model catalogs", () => {
+  test("model types and availability stay scoped to their account", async () => {
+    _internal.forgetLive()
+    const real = globalThis.fetch
+    globalThis.fetch = async () => new Response(JSON.stringify([
+      { modelTypeId: 901, modelTypeName: "Shared Model" },
+      { modelTypeId: 903, modelTypeName: "Only A" },
+    ]), { status: 200 })
+    try {
+      await _internal.liveListFor("account-a")
+      globalThis.fetch = async () => new Response(JSON.stringify([
+        { modelTypeId: 902, modelTypeName: "Shared Model" },
+      ]), { status: 200 })
+      await _internal.liveListFor("account-b")
+      expect(modelTypeOf("shared-model", "account-a")).toBe(901)
+      expect(modelTypeOf("shared-model", "account-b")).toBe(902)
+      expect(_internal.isKnownModel("only-a", "account-a")).toBe(true)
+      expect(_internal.isKnownModel("only-a", "account-b")).toBe(false)
+    } finally {
+      globalThis.fetch = real
+      _internal.forgetLive()
+    }
+  })
+})
+
 describe("authCandidates", () => {
   const { authCandidates, authPath } = _internal
 

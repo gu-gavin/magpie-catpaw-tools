@@ -54,9 +54,10 @@ const MODELS = {
 // the vendor's own id wins when the live list has it: modelTypeIds get
 // renumbered (LongCat-2.5 moved 10002544 → 107 in 2026-11), and the table's
 // snapshot is only a fallback for when the list cannot be read
-const modelTypeOf = (id) => liveTypes.get(id) ?? MODELS[id]?.type ?? MODELS["longcat-2.0"].type
+const modelTypeOf = (id, token) =>
+  liveLists.get(token)?.models?.[id]?.type ?? MODELS[id]?.type ?? MODELS["longcat-2.0"].type
 
-const isKnownModel = (id) => id in MODELS || liveTypes.has(id)
+const isKnownModel = (id, token) => id in MODELS || Boolean(liveLists.get(token)?.models?.[id])
 
 // A model the table cannot describe (the vendor added it since this release)
 // still gets the shape every CatPaw gateway model has, rather than no limits
@@ -90,7 +91,6 @@ const LIVE_TTL = 5 * 60 * 1000
 const LIVE_URL = "/api/agent/maas/model-types"
 
 const liveLists = new Map() // token -> { at, models }
-const liveTypes = new Map() // model id -> modelType, for models the table lacks
 
 // The vendor rate-limits new conversations and answers 429 when they come too
 // fast. The sibling catpaw plugin measured the window at ~41s on the web chat
@@ -204,7 +204,6 @@ async function fetchLiveModels(token, signal) {
   const rows = Array.isArray(body) ? body : body?.data
   if (!Array.isArray(rows)) throw new Error("妙手模型列表无法解析")
   const models = liveModels(rows)
-  for (const [id, m] of Object.entries(models)) liveTypes.set(id, m.type)
   return models
 }
 
@@ -944,14 +943,6 @@ export async function CatPawToolsAuthPlugin({ directory } = {}) {
               return errorResponse(400, "messages is required")
             }
 
-            const model = chat.model || "longcat-2.0"
-            if (!isKnownModel(model)) {
-              return errorResponse(
-                400,
-                `unknown model "${model}" (known: ${[...Object.keys(MODELS), ...liveTypes.keys()].join(", ")})`,
-              )
-            }
-
             // A cooldown opened by an earlier 429 is still running: answer at
             // once instead of sending another doomed request upstream.
             const cooling = rateLimitSecondsLeft()
@@ -965,6 +956,14 @@ export async function CatPawToolsAuthPlugin({ directory } = {}) {
             } catch (e) {
               if (e instanceof SignedOut) return signInError(String(e.message))
               return errorResponse(502, String(e?.message ?? e), "api_error")
+            }
+
+            const model = chat.model || "longcat-2.0"
+            if (!isKnownModel(model, token)) {
+              return errorResponse(
+                400,
+                `unknown model "${model}" (known: ${Object.keys(MODELS).join(", ")})`,
+              )
             }
 
             const { messages, systemPrompt } = fromOpenAI(chat)
@@ -1026,7 +1025,7 @@ export async function CatPawToolsAuthPlugin({ directory } = {}) {
                 {
                   conversationId,
                   message: messageToSend,
-                  modelType: modelTypeOf(model),
+                  modelType: modelTypeOf(model, token),
                   source: "CatX",
                   mode: "CATX_APP",
                   permissionMode: "unsafeBypassPermissions",
@@ -1091,7 +1090,7 @@ export async function CatPawToolsAuthPlugin({ directory } = {}) {
                     for await (const msg of runTurn(token, {
                       conversationId,
                       message: turnMessage,
-                      modelType: modelTypeOf(model),
+                      modelType: modelTypeOf(model, token),
                       toolConfigs,
                       systemPrompt,
                       signal: init.signal,
@@ -1163,7 +1162,7 @@ export async function CatPawToolsAuthPlugin({ directory } = {}) {
               for await (const msg of runTurn(token, {
                 conversationId,
                 message: turnMessage,
-                modelType: modelTypeOf(model),
+                modelType: modelTypeOf(model, token),
                 toolConfigs,
                 systemPrompt,
                 signal: init.signal,
@@ -1468,7 +1467,6 @@ export const _internal = {
   rateOf,
   forgetLive: () => {
     liveLists.clear()
-    liveTypes.clear()
   },
   authCandidates,
   rateLimitSecondsLeft,
