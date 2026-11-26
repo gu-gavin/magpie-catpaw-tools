@@ -49,7 +49,7 @@
 | D-06 | P2 | 余额只作为文本，未传递结构化 `balance` | Magpie `usage` 契约 | 已修复 |
 | D-07 | P0 | `tool_choice:none` 无效，服务端工具无法保证关闭 | OpenAI 兼容 + 安全 | 已修复 |
 | D-08 | P1 | 空参数工具调用发出非法流 | OpenAI streaming 契约 | 已修复 |
-| D-09 | P2 | 命名与文案缺乏层次，老配置还会覆盖新名称 | 产品质量 + Magpie 可选展示字段 | 已确认 |
+| D-09 | P2 | 命名与文案缺乏层次，老配置还会覆盖新名称 | 产品质量 + Magpie 可选展示字段 | 已修复 |
 | D-10 | P2 | OpenCode 官方检查器失败 | OpenCode / 官方仓库规范 | 已运行 |
 | D-11 | P2 | 未验证的模型上下文/输出上限被声明为事实 | 产品质量 | 已确认 |
 | D-12 | P2 | 限流状态全局共享，忽略 `Retry-After` | 多账号正确性 | 已确认 |
@@ -214,6 +214,7 @@
 ### D-09 命名与文案缺乏层次，老配置还会覆盖新名称
 
 - **等级：** P2
+- **状态：** 已修复
 - **依据：** 产品质量；`magpie.name/magpie.summary` 是 Magpie 可选展示字段，不是强制格式。
 - **位置：** `package.json:2`、`package.json:4`、`package.json:24`、`index.mjs:18`、`index.mjs:1146`、`index.mjs:1332`
 - **现象：**

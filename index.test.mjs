@@ -332,6 +332,29 @@ describe("icon", () => {
   })
 })
 
+describe("display names", () => {
+  test("new and legacy provider configs use the short CatPaw name", async () => {
+    const plugin = await CatPawToolsAuthPlugin({})
+    const fresh = { provider: {} }
+    await plugin.config(fresh)
+    expect(fresh.provider["catpaw-tools"].name).toBe("妙手 CatPaw")
+
+    const legacy = { provider: { "catpaw-tools": { name: "妙手 CatPaw · 原生工具调用" } } }
+    await plugin.config(legacy)
+    expect(legacy.provider["catpaw-tools"].name).toBe("妙手 CatPaw")
+
+    const custom = { provider: { "catpaw-tools": { name: "My CatPaw" } } }
+    await plugin.config(custom)
+    expect(custom.provider["catpaw-tools"].name).toBe("My CatPaw")
+  })
+
+  test("the package supplies a readable plugin-row name", async () => {
+    const pkg = JSON.parse(await readFile(new URL("./package.json", import.meta.url), "utf8"))
+    expect(pkg.magpie.name).toBe("妙手 CatPaw")
+    expect(pkg.magpie.summary.zh).toContain("工具调用")
+  })
+})
+
 describe("liveModels", () => {
   // one row of each kind the gateway sends: a model the table knows, one it
   // cannot (added since the table was written), and the user's own model
@@ -528,6 +551,21 @@ describe("usage identity", () => {
       expect(usage.error).toContain("有效的积分")
       expect(usage.signIn).toBe("kept")
       expect(usage.windows).toBeUndefined()
+    } finally {
+      globalThis.fetch = real
+    }
+  })
+
+  test("a missing plan name does not repeat the provider name", async () => {
+    const real = globalThis.fetch
+    globalThis.fetch = async () => new Response(JSON.stringify({
+      code: 0,
+      data: { availableCredits: 1 },
+    }), { status: 200 })
+    try {
+      const { auth } = await CatPawToolsAuthPlugin({})
+      const usage = await auth.usage(async () => ({ type: "oauth", source: "manual", access: "tok" }))
+      expect(usage.plan).toBeUndefined()
     } finally {
       globalThis.fetch = real
     }

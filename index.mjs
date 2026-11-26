@@ -15,7 +15,8 @@
 // not a delta — so each is diffed against the last.
 
 const ID = "catpaw-tools"
-const NAME = "妙手 CatPaw · 原生工具调用"
+const NAME = "妙手 CatPaw"
+const LEGACY_NAME = "妙手 CatPaw · 原生工具调用"
 
 const ORIGIN = "https://ai.catpaw.meituan.com"
 
@@ -1264,7 +1265,7 @@ export async function CatPawToolsAuthPlugin({ directory } = {}) {
         // no signIn on a clean read: magpie takes that as "the sign-in is fine"
         // and clears an earlier expired mark
         return {
-          plan: plan.planName || NAME,
+          ...(plan.planName ? { plan: plan.planName } : {}),
           user,
           windows: [
             {
@@ -1450,10 +1451,10 @@ export async function CatPawToolsAuthPlugin({ directory } = {}) {
       config.provider ??= {}
       const was = config.provider[ID] ?? {}
       config.provider[ID] = {
-        name: NAME,
         npm: "@ai-sdk/openai-compatible",
         api: ORIGIN,
         ...was,
+        name: was.name === LEGACY_NAME ? NAME : (was.name ?? NAME),
         models: {
           ...Object.fromEntries(Object.keys(MODELS).map((id) => [id, configModel(id)])),
           ...(was.models ?? {}),
