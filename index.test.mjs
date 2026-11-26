@@ -119,6 +119,14 @@ describe("toToolConfigs", () => {
     const names = out.map((c) => c.name)
     expect(new Set(names).size).toBe(names.length)
   })
+
+  test("tool_choice none enables no client tools", () => {
+    const out = toToolConfigs([
+      { function: { name: "danger", parameters: {} } },
+    ], "none")
+    expect(out.every((c) => c.enable === false)).toBe(true)
+    expect(out.some((c) => c.name === "danger")).toBe(false)
+  })
 })
 
 describe("makeDiffer", () => {
@@ -607,12 +615,12 @@ describe("round", () => {
       fetch("https://x/chat/completions", {
         method: "POST",
         headers,
-        body: JSON.stringify({ model, messages }),
+        body: JSON.stringify(Array.isArray(messages) ? { model, messages } : messages),
       })
   }
 
-  const stream = (text) =>
-    new Response(`data:${JSON.stringify({ message: { type: "assistant", messageId: "m", model: "x", content: [{ type: "text", text }] } })}\n\n`, {
+  const stream = (value) =>
+    new Response(`data:${JSON.stringify({ message: { type: "assistant", messageId: "m", model: "x", content: Array.isArray(value) ? value : [{ type: "text", text: value }] } })}\n\n`, {
       status: 200,
       headers: { "content-type": "text/event-stream" },
     })
@@ -891,5 +899,55 @@ describe("round", () => {
       s.restore()
       _internal.forgetRateLimit()
     }
+  })
+
+  test("tool_choice none turns an upstream tool call into an error", async () => {
+    _internal.forgetRateLimit()
+    const s = stub((path) => {
+      if (path.endsWith("/conversation/round")) return new Response('{"code":0}', { status: 200 })
+      if (path.endsWith("/conversation/event")) return new Response('{"code":0}', { status: 200 })
+      return stream([{ type: "tool_use", toolCallId: "call-1", toolName: "danger", toolParams: "{}" }])
+    })
+    try {
+      const res = await (await client())({
+        model: "longcat-2.0",
+        tool_choice: "none",
+        tools: [{ type: "function", function: { name: "danger", parameters: {} } }],
+        messages: [{ role: "user", content: "do not call tools" }],
+      })
+      expect(res.status).toBe(502)
+      expect((await res.json()).error.message).toContain("未声明")
+    } finally {
+      s.restore()
+    }
+  })
+
+  test("an undeclared upstream tool call is not exposed to the client", async () => {
+    _internal.forgetRateLimit()
+    const s = stub((path) => {
+      if (path.endsWith("/conversation/round")) return new Response('{"code":0}', { status: 200 })
+      if (path.endsWith("/conversation/event")) return new Response('{"code":0}', { status: 200 })
+      return stream([{ type: "tool_use", toolCallId: "call-1", toolName: "server_tool", toolParams: "{}" }])
+    })
+    try {
+      const res = await (await client())({
+        model: "longcat-2.0",
+        tools: [{ type: "function", function: { name: "client_tool", parameters: {} } }],
+        messages: [{ role: "user", content: "hi" }],
+      })
+      expect(res.status).toBe(502)
+    } finally {
+      s.restore()
+    }
+  })
+
+  test("unsupported forced tool choices are rejected before upstream", async () => {
+    const res = await (await client())({
+      model: "longcat-2.0",
+      tool_choice: "required",
+      messages: [{ role: "user", content: "hi" }],
+    })
+    expect(res.status).toBe(400)
+    expect((await res.json()).error.message).toContain("tool_choice")
   })
 })

@@ -673,9 +673,9 @@ const SERVER_TOOLS = [
 // The server's own tools are sent alongside with `enable: false`. The tool set
 // is per-turn (leaving them out would not disable them) and `enable: false`
 // does not disable them either — it is the best signal available.
-function toToolConfigs(tools) {
+function toToolConfigs(tools, toolChoice) {
   const out = []
-  const mine = Array.isArray(tools) ? tools : []
+  const mine = toolChoice === "none" || !Array.isArray(tools) ? [] : tools
   const claimed = new Set()
 
   for (const t of mine) {
@@ -697,6 +697,18 @@ function toToolConfigs(tools) {
   }
 
   return out
+}
+
+function declaredToolNames(tools, toolChoice) {
+  if (toolChoice === "none" || !Array.isArray(tools)) return new Set()
+  return new Set(tools.map((tool) => tool?.function?.name ?? tool?.name).filter(Boolean))
+}
+
+function requireDeclaredTool(tool, allowed) {
+  if (allowed.has(tool?.toolName)) return
+  throw Object.assign(new Error(`妙手返回了未声明的工具调用：${tool?.toolName ?? "unknown"}`), {
+    httpStatus: 502,
+  })
 }
 
 // ── the turn stream ────────────────────────────────────────────────────────
@@ -962,7 +974,12 @@ export async function CatPawToolsAuthPlugin({ directory } = {}) {
 
             if (messages.length === 0) return errorResponse(400, "no usable messages")
 
-            const toolConfigs = toToolConfigs(chat.tools)
+            const toolChoice = chat.tool_choice
+            if (toolChoice && toolChoice !== "auto" && toolChoice !== "none") {
+              return errorResponse(400, "CatPaw supports tool_choice auto or none only")
+            }
+            const toolConfigs = toToolConfigs(chat.tools, toolChoice)
+            const allowedTools = declaredToolNames(chat.tools, toolChoice)
 
             // A tool result in the tail means this is a continuation of a tool
             // round: reuse the conversation and send that message directly.
@@ -1094,6 +1111,7 @@ export async function CatPawToolsAuthPlugin({ directory } = {}) {
                           const d = differ.text(msg.messageId, c.text ?? "")
                           if (d) controller.enqueue(chunk({ content: d }, null))
                         } else if (c.type === "tool_use") {
+                          requireDeclaredTool(c, allowedTools)
                           stashed = c
                           const idx = indexOf(c.toolCallId)
                           const d = differ.params(c.toolCallId, c.toolParams ?? "")
@@ -1164,6 +1182,7 @@ export async function CatPawToolsAuthPlugin({ directory } = {}) {
                     if (c.text) text = c.text
                     if (c.reasoningContent) reasoning = c.reasoningContent
                   } else if (c.type === "tool_use") {
+                    requireDeclaredTool(c, allowedTools)
                     // frames repeat a tool call as its params grow: keep the last
                     const i = toolCalls.findIndex((t) => t.toolCallId === c.toolCallId)
                     if (i === -1) toolCalls.push(c)
