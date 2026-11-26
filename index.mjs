@@ -108,6 +108,14 @@ function noteRateLimit(ms = RATE_LIMIT_MS) {
   return Math.ceil((limitedUntil - Date.now()) / 1000)
 }
 
+function retryAfterMs(value) {
+  if (value == null) return undefined
+  const text = String(value).trim()
+  if (/^\d+(?:\.\d+)?$/.test(text)) return Number(text) * 1000
+  const at = Date.parse(text)
+  return Number.isFinite(at) ? Math.max(0, at - Date.now()) : undefined
+}
+
 const rateLimitSecondsLeft = () => Math.max(0, Math.ceil((limitedUntil - Date.now()) / 1000))
 
 const rateLimitMessage = (sec) =>
@@ -120,12 +128,14 @@ const rateLimitedError = (sec) =>
 // a spent balance and an expired login as ordinary error text, and a 429 must
 // carry Retry-After so the host backs off instead of retrying in place.
 function stepError(e) {
-  if (e?.httpStatus === 429) return rateLimitedError(noteRateLimit())
+  const status = e?.httpStatus ?? e?.code
   const detail = String(e?.message ?? e)
-  if (e?.quota || QUOTA_GATE.test(detail)) return quotaResponse(detail)
-  if (e?.httpStatus === 401) return signInError(detail)
-  if (e?.httpStatus === 402) return quotaResponse(detail)
-  return errorResponse(e?.httpStatus >= 400 && e?.httpStatus < 500 ? e.httpStatus : 502, detail, e?.httpStatus === 401 ? "authentication_error" : "api_error")
+  if (status === 429) return rateLimitedError(noteRateLimit(retryAfterMs(e?.retryAfter)))
+  if (e?.quota || status === 402 || QUOTA_GATE.test(detail)) return quotaResponse(detail)
+  if (status === 401 || /passport auth failed|请重新登录|登录态.*(?:失效|过期)|token.*(?:expired|invalid)/i.test(detail)) {
+    return signInError(detail)
+  }
+  return errorResponse(status >= 400 && status < 500 ? status : 502, detail, "api_error")
 }
 
 // extendedInfo.rateMultiplier, the multiplier the client prints as "<n>x";
@@ -252,6 +262,31 @@ function quotaResponse(detail) {
     {},
     { code: "insufficient_credits", help_url: help, upstream_message: upstream },
   )
+}
+
+function gatewayFailure(step, result, { requirePayload = false } = {}) {
+  const payload = result.payload
+  const code = payload?.code ?? payload?.unifyCode
+  const detail = String(payload?.msg ?? payload?.message ?? result.text ?? "").trim()
+  const status = result.status
+  if (status === 429 || code === 429 || looksRateLimited(detail)) {
+    return rateLimitedError(noteRateLimit(retryAfterMs(result.retryAfter)))
+  }
+  if (status === 402 || code === 402 || QUOTA_GATE.test(detail)) return quotaResponse(detail)
+  if (status === 401 || code === 401 || /passport auth failed|请重新登录|登录态.*(?:失效|过期)|token.*(?:expired|invalid)/i.test(detail)) {
+    return signInError(`妙手 ${step} 登录态已失效：${detail.slice(0, 300)}`)
+  }
+  const badCode = code != null && code !== 0 && code !== 200
+  if (status !== 200 || badCode || (requirePayload && !payload)) {
+    const said = detail || `HTTP ${status}`
+    const codeSaid = badCode ? ` code=${code}` : ""
+    return errorResponse(
+      status >= 400 && status < 500 ? status : 502,
+      `妙手 ${step} 失败：HTTP ${status}${codeSaid} ${said.slice(0, 300)}`,
+      "api_error",
+    )
+  }
+  return null
 }
 
 async function bodyText(input, init) {
@@ -476,7 +511,7 @@ async function post(pathname, body, token, { extraHeaders, signal, timeoutMs = 3
   try {
     payload = JSON.parse(text)
   } catch {}
-  return { status: res.status, text, payload }
+  return { status: res.status, text, payload, retryAfter: res.headers.get("retry-after") }
 }
 
 // ── message translation ────────────────────────────────────────────────────
@@ -706,6 +741,7 @@ async function* runTurn(token, { conversationId, message, modelType, toolConfigs
     const detail = (await res.text().catch(() => "")).slice(0, 500)
     throw Object.assign(new Error(`妙手 turn 失败：HTTP ${res.status} ${detail}`), {
       httpStatus: res.status,
+      retryAfter: res.headers.get("retry-after"),
     })
   }
   if (!res.body) throw new Error("妙手 turn 返回了空流")
@@ -732,9 +768,12 @@ async function* runTurn(token, { conversationId, message, modelType, toolConfigs
       }
       if (frame.error) {
         const said = `妙手 SSE 错误：${frame.error.message ?? JSON.stringify(frame.error)}`
+        const status = Number(frame.error.status ?? frame.error.code)
         throw Object.assign(new Error(said), {
           unifyCode: frame.error.unifyCode,
           code: frame.error.code,
+          ...(Number.isInteger(status) && status >= 400 && status < 600 ? { httpStatus: status } : {}),
+          retryAfter: frame.error.retryAfter,
           quota: QUOTA_GATE.test(said),
         })
       }
@@ -998,25 +1037,8 @@ export async function CatPawToolsAuthPlugin({ directory } = {}) {
                 { extraHeaders: { "m-spanid": "0.2", "m-spanname": "conversation.round" } },
               ).catch((e) => ({ status: 0, text: String(e?.message ?? e) }))
 
-              if (round.status === 429 || looksRateLimited(round.text)) {
-                return rateLimitedError(noteRateLimit())
-              }
-              if (round.status !== 200) {
-                if (QUOTA_GATE.test(round.text)) return quotaResponse(round.text)
-                // `round` reports a dead token as 401 with its own envelope;
-                // passing that through as a 502 would send the host retrying
-                // instead of asking the user to sign in again.
-                if (round.status === 401 || /passport auth failed|请重新登录/.test(round.text)) {
-                  return signInError(`妙手登录态已失效：${round.text.slice(0, 300)}`)
-                }
-                // status 0 means the call never landed (network, timeout): going
-                // on to open the stream would fail with a much less useful error
-                return errorResponse(
-                  502,
-                  `妙手 round 失败：HTTP ${round.status} ${round.text.slice(0, 300)}`,
-                  "api_error",
-                )
-              }
+              const roundError = gatewayFailure("round", round, { requirePayload: true })
+              if (roundError) return roundError
 
               // The round landed, so the conversation exists: from here on
               // later turns stream into it without another `round`.
@@ -1029,9 +1051,8 @@ export async function CatPawToolsAuthPlugin({ directory } = {}) {
                 { extraHeaders: { "m-spanid": "0.3", "m-spanname": "conversation.event" } },
               ).catch((e) => ({ status: 0, text: String(e?.message ?? e) }))
 
-              if (event.status === 429 || looksRateLimited(event.text)) {
-                return rateLimitedError(noteRateLimit())
-              }
+              const eventError = gatewayFailure("event", event)
+              if (eventError) return eventError
             }
             const chatcmpl = `chatcmpl-${uuid().slice(0, 24)}`
             const created = Math.floor(Date.now() / 1000)

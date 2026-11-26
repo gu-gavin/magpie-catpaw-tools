@@ -717,4 +717,100 @@ describe("round", () => {
       s.restore()
     }
   })
+
+  test("an HTTP 200 round business error is not reported as success", async () => {
+    _internal.forgetRateLimit()
+    const s = stub(() => new Response('{"code":500,"msg":"boom"}', { status: 200 }))
+    try {
+      const res = await (await client())([{ role: "user", content: "hi" }])
+      expect(res.status).toBe(502)
+      expect((await res.json()).error.message).toContain("code=500")
+    } finally {
+      s.restore()
+    }
+  })
+
+  test("round and SSE 401 errors mark the sign-in expired", async () => {
+    _internal.forgetRateLimit()
+    const round = stub(() => new Response('{"code":401,"msg":"token expired"}', { status: 200 }))
+    try {
+      const res = await (await client())([{ role: "user", content: "hi" }])
+      expect(res.status).toBe(401)
+      expect(res.headers.get("x-magpie-sign-in")).toBe("expired")
+    } finally {
+      round.restore()
+    }
+
+    const sse = stub((path) => {
+      if (path.endsWith("/conversation/round")) return new Response('{"code":0}', { status: 200 })
+      if (path.endsWith("/conversation/event")) return new Response('{"code":0}', { status: 200 })
+      return new Response(`data: ${JSON.stringify({ error: { code: 401, message: "token expired" } })}\n\n`, { status: 200 })
+    })
+    try {
+      const res = await (await client())([{ role: "user", content: "hi" }])
+      expect(res.status).toBe(401)
+      expect(res.headers.get("x-magpie-sign-in")).toBe("expired")
+    } finally {
+      sse.restore()
+    }
+  })
+
+  test("round 402 and SSE 429 keep their quota and rate-limit semantics", async () => {
+    _internal.forgetRateLimit()
+    const quota = stub(() => new Response('{"code":402,"msg":"payment required"}', { status: 200 }))
+    try {
+      const res = await (await client())([{ role: "user", content: "hi" }])
+      expect(res.status).toBe(402)
+      expect((await res.json()).error.type).toBe("insufficient_quota")
+    } finally {
+      quota.restore()
+    }
+
+    const limited = stub((path) => {
+      if (path.endsWith("/conversation/round")) return new Response('{"code":0}', { status: 200 })
+      if (path.endsWith("/conversation/event")) return new Response('{"code":0}', { status: 200 })
+      return new Response(`data: ${JSON.stringify({ error: { code: 429, message: "too many requests" } })}\n\n`, { status: 200 })
+    })
+    try {
+      const res = await (await client())([{ role: "user", content: "hi" }])
+      expect(res.status).toBe(429)
+      expect(res.headers.get("retry-after")).toBeTruthy()
+      expect(_internal.rateLimitSecondsLeft()).toBeGreaterThan(0)
+    } finally {
+      limited.restore()
+      _internal.forgetRateLimit()
+    }
+  })
+
+  test("an event failure stops before turn", async () => {
+    _internal.forgetRateLimit()
+    const s = stub((path) => {
+      if (path.endsWith("/conversation/round")) return new Response('{"code":0}', { status: 200 })
+      if (path.endsWith("/conversation/event")) return new Response('{"code":500,"msg":"boom"}', { status: 500 })
+      return stream("should not run")
+    })
+    try {
+      const res = await (await client())([{ role: "user", content: "hi" }])
+      expect(res.status).toBe(502)
+      expect(s.seen.some((r) => r.path.endsWith("/conversation/turn"))).toBe(false)
+    } finally {
+      s.restore()
+    }
+  })
+
+  test("upstream Retry-After overrides the default cooldown", async () => {
+    _internal.forgetRateLimit()
+    const s = stub(() => new Response('{"code":429,"msg":"too many requests"}', {
+      status: 429,
+      headers: { "retry-after": "120" },
+    }))
+    try {
+      const res = await (await client())([{ role: "user", content: "hi" }])
+      expect(res.status).toBe(429)
+      expect(res.headers.get("retry-after")).toBe("120")
+    } finally {
+      s.restore()
+      _internal.forgetRateLimit()
+    }
+  })
 })
